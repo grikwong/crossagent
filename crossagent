@@ -1,0 +1,2892 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================================
+# crossagent — Cross-Model AI Agent Orchestrator
+# Leverages Claude Code (planner/implementer) + Codex CLI (reviewer/verifier)
+# ============================================================================
+
+CROSSAGENT_VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CROSSAGENT_HOME="${CROSSAGENT_HOME:-$HOME/.crossagent}"
+WORKFLOWS_DIR="$CROSSAGENT_HOME/workflows"
+AGENTS_DIR="$CROSSAGENT_HOME/agents"
+
+# ── Colors & Symbols ────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+PHASE_COLORS=( '' "$BLUE" "$MAGENTA" "$CYAN" "$GREEN" )
+PHASE_LABELS=( '' 'PLAN' 'REVIEW' 'IMPLEMENT' 'VERIFY' )
+# ── UI Helpers ──────────────────────────────────────────────────────────────
+
+info()    { echo -e "  ${BLUE}i${NC} $*"; }
+success() { echo -e "  ${GREEN}✓${NC} $*"; }
+warn()    { echo -e "  ${YELLOW}!${NC} $*"; }
+die()     { echo -e "  ${RED}✗${NC} $*" >&2; exit 1; }
+
+separator() { echo -e "  ${DIM}$(printf '%.0s─' {1..50})${NC}"; }
+
+phase_banner() {
+    local p=$1 name=$2 tool=$3
+    local c="${PHASE_COLORS[$p]}" label="${PHASE_LABELS[$p]}"
+    echo ""
+    echo -e "  ${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${BOLD}PHASE ${p}: ${label}${NC}"
+    echo -e "  ${DIM}Tool:${NC}     ${tool}"
+    echo -e "  ${DIM}Workflow:${NC} ${name}"
+    echo -e "  ${c}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+}
+
+# ── State Management ────────────────────────────────────────────────────────
+
+MEMORY_DIR="$CROSSAGENT_HOME/memory"
+
+ensure_dirs() {
+    mkdir -p "$CROSSAGENT_HOME" "$WORKFLOWS_DIR" "$AGENTS_DIR" "$MEMORY_DIR"
+    init_global_memory
+}
+
+# ── Memory Functions ───────────────────────────────────────────────────────
+
+init_global_memory() {
+    if [[ ! -f "$MEMORY_DIR/global-context.md" ]]; then
+        cat > "$MEMORY_DIR/global-context.md" <<'EOF'
+# Crossagent Global Context
+
+> Cross-workflow patterns, conventions, and accumulated knowledge.
+> Updated by agents after each workflow phase.
+
+---
+
+## Codebase Patterns
+
+(Patterns discovered across workflows will be added here)
+
+## Conventions
+
+(Coding conventions, naming patterns, etc.)
+
+## Changelog
+
+| Date | Change | Source Workflow |
+|------|--------|----------------|
+EOF
+    fi
+    if [[ ! -f "$MEMORY_DIR/lessons-learned.md" ]]; then
+        cat > "$MEMORY_DIR/lessons-learned.md" <<'EOF'
+# Crossagent Lessons Learned
+
+> Retrospective insights from completed workflows.
+> Each entry documents what worked, what didn't, and process improvements.
+
+---
+
+(Entries will be added after workflow completion)
+EOF
+    fi
+}
+
+init_workflow_memory() {
+    local d=$1 name=$2 desc=$3 repo=$4
+    [[ -f "$d/memory.md" ]] && return 0
+    cat > "$d/memory.md" <<EOF
+# Workflow Memory: ${name}
+
+## Metadata
+| Field | Value |
+|-------|-------|
+| Workflow | ${name} |
+| Repository | ${repo} |
+| Created | $(date '+%Y-%m-%d') |
+| Last Updated | $(date '+%Y-%m-%d') |
+
+## Task Summary
+${desc}
+
+## Decisions Log
+| Decision | Rationale | Phase | Date |
+|----------|-----------|-------|------|
+
+## Key Findings
+(Important discoveries made during the workflow)
+
+## Session Notes
+### $(date '+%Y-%m-%d')
+- Workflow created
+EOF
+}
+
+get_current()     { [[ -f "$CROSSAGENT_HOME/current" ]] && cat "$CROSSAGENT_HOME/current" || echo ""; }
+set_current()     { echo "$1" > "$CROSSAGENT_HOME/current"; }
+wf_dir()          { echo "$WORKFLOWS_DIR/${1:-$(get_current)}"; }
+get_phase()       { [[ -f "$1/phase" ]] && cat "$1/phase" || echo "0"; }
+set_phase()       { echo "$2" > "$1/phase"; }
+get_description() { [[ -f "$1/description" ]] && cat "$1/description" || echo ""; }
+
+get_conf() {
+    local file="$1/config" key="$2"
+    [[ -f "$file" ]] && grep "^${key}=" "$file" 2>/dev/null | cut -d= -f2- || echo ""
+}
+
+set_conf() {
+    local file="$1/config" key="$2" val="$3"
+    local tmp="${file}.tmp.$$" found=false line
+
+    : > "$tmp"
+
+    if [[ -f "$file" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" == "${key}="* ]]; then
+                printf '%s=%s\n' "$key" "$val" >> "$tmp"
+                found=true
+            else
+                printf '%s\n' "$line" >> "$tmp"
+            fi
+        done < "$file"
+    fi
+
+    if [[ "$found" == false ]]; then
+        printf '%s=%s\n' "$key" "$val" >> "$tmp"
+    fi
+
+    mv "$tmp" "$file"
+}
+
+require_workflow() {
+    local name
+    name=$(get_current)
+    [[ -z "$name" ]] && die "No active workflow. Run: ${BOLD}crossagent new <name>${NC}"
+    local d
+    d=$(wf_dir "$name")
+    [[ ! -d "$d" ]] && die "Workflow dir missing: $d"
+    echo "$name"
+}
+
+# ── Dependency Check ────────────────────────────────────────────────────────
+
+# Convert phase to number for safe arithmetic (done → 5)
+phase_num() { [[ "$1" == "done" ]] && echo 5 || echo "$1"; }
+
+require_option_arg() {
+    local option="$1" value="${2:-}"
+    [[ -n "$value" ]] || die "Option requires a value: ${option}"
+}
+
+resolve_dir() {
+    local label="$1" path="$2"
+    [[ -n "$path" ]] || die "${label} path cannot be empty."
+    [[ "$path" != *,* ]] || die "${label} path cannot contain commas: ${path}"
+    [[ -d "$path" ]] || die "${label} path not found: ${path}"
+    (cd "$path" && pwd)
+}
+
+phase_key() {
+    case "$1" in
+        1|plan) echo "plan" ;;
+        2|review) echo "review" ;;
+        3|implement|impl) echo "implement" ;;
+        4|verify) echo "verify" ;;
+        *) return 1 ;;
+    esac
+}
+
+phase_id() {
+    case "$1" in
+        1|plan) echo 1 ;;
+        2|review) echo 2 ;;
+        3|implement|impl) echo 3 ;;
+        4|verify) echo 4 ;;
+        *) return 1 ;;
+    esac
+}
+
+phase_agent_conf_key() {
+    local key
+    key=$(phase_key "$1") || return 1
+    echo "${key}_agent"
+}
+
+default_phase_agent() {
+    case "$(phase_key "$1")" in
+        plan|implement) echo "claude" ;;
+        review|verify) echo "codex" ;;
+    esac
+}
+
+agent_is_builtin() {
+    [[ "$1" == "claude" || "$1" == "codex" ]]
+}
+
+agent_file() {
+    echo "$AGENTS_DIR/$1"
+}
+
+agent_exists() {
+    local name="$1"
+    agent_is_builtin "$name" || [[ -f "$(agent_file "$name")" ]]
+}
+
+get_agent_prop() {
+    local name="$1" key="$2" file
+    if agent_is_builtin "$name"; then
+        case "$name:$key" in
+            claude:adapter) echo "claude" ;;
+            claude:command) echo "claude" ;;
+            claude:display_name) echo "Claude Code" ;;
+            codex:adapter) echo "codex" ;;
+            codex:command) echo "codex" ;;
+            codex:display_name) echo "OpenAI Codex" ;;
+            *) echo "" ;;
+        esac
+        return 0
+    fi
+
+    file=$(agent_file "$name")
+    [[ -f "$file" ]] && grep "^${key}=" "$file" 2>/dev/null | cut -d= -f2- || echo ""
+}
+
+require_agent() {
+    local name="$1"
+    agent_exists "$name" || die "Agent not found: ${name}"
+}
+
+sanitize_agent_name() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g'
+}
+
+require_agent_command() {
+    local agent="$1" cmd
+    cmd=$(get_agent_prop "$agent" "command")
+    [[ -n "$cmd" ]] || die "Agent '${agent}' has no command configured."
+    if [[ "$cmd" == */* ]]; then
+        [[ -x "$cmd" ]] || die "Agent '${agent}' command is not executable: ${cmd}"
+    else
+        command -v "$cmd" >/dev/null 2>&1 || die "Agent '${agent}' command not found on PATH: ${cmd}"
+    fi
+}
+
+get_phase_agent() {
+    local d="$1" phase="$2" key value
+    key=$(phase_agent_conf_key "$phase") || die "Unknown phase: ${phase}"
+    value=$(get_conf "$d" "$key")
+    if [[ -n "$value" ]]; then
+        echo "$value"
+    else
+        default_phase_agent "$phase"
+    fi
+}
+
+set_phase_agent() {
+    local d="$1" phase="$2" agent="$3" key
+    require_agent "$agent"
+    key=$(phase_agent_conf_key "$phase") || die "Unknown phase: ${phase}"
+    set_conf "$d" "$key" "$agent"
+}
+
+reset_phase_agent() {
+    local d="$1" phase="$2"
+    set_phase_agent "$d" "$phase" "$(default_phase_agent "$phase")"
+}
+
+phase_tool_name() {
+    local d="$1" phase="$2" agent
+    agent=$(get_phase_agent "$d" "$phase")
+    get_agent_prop "$agent" "display_name"
+}
+
+# ── JSON Helpers (for --json output & UI integration) ─────────────────────
+
+json_escape() {
+    local s="$1"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\t'/\\t}
+    s=${s//$'\r'/\\r}
+    printf '%s' "$s"
+}
+
+# ── Multi-Repo Helpers ─────────────────────────────────────────────────────
+
+# Check if a path is in a comma-separated list (exact match on resolved paths)
+_add_dirs_contains() {
+    local csv="$1" needle="$2"
+    [[ -z "$csv" ]] && return 1
+    local _dirs _dir
+    IFS=',' read -ra _dirs <<< "$csv"
+    for _dir in "${_dirs[@]}"; do
+        [[ "$_dir" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+# Append a path to a comma-separated list (no dedup check — caller must check)
+_add_dirs_append() {
+    local csv="$1" path="$2"
+    if [[ -z "$csv" ]]; then
+        echo "$path"
+    else
+        echo "${csv},${path}"
+    fi
+}
+
+# Remove a path from a comma-separated list; returns new CSV
+_add_dirs_remove() {
+    local csv="$1" needle="$2"
+    [[ -z "$csv" ]] && { echo ""; return; }
+    local _dirs _dir out="" first=true
+    IFS=',' read -ra _dirs <<< "$csv"
+    for _dir in "${_dirs[@]}"; do
+        [[ "$_dir" == "$needle" ]] && continue
+        [[ -z "$_dir" ]] && continue
+        $first || out+=","
+        out+="$_dir"
+        first=false
+    done
+    echo "$out"
+}
+
+_json_csv_to_array() {
+    local csv="$1"
+    if [[ -z "$csv" ]]; then echo "[]"; return; fi
+    local out="[" first=true
+    IFS=',' read -ra items <<< "$csv"
+    for item in "${items[@]}"; do
+        [[ -z "$item" ]] && continue
+        $first || out+=","
+        out+="\"$(json_escape "$item")\""
+        first=false
+    done
+    echo "${out}]"
+}
+
+_json_artifact() {
+    local path="$1"
+    if [[ -f "$path" ]]; then
+        local lines
+        lines=$(wc -l < "$path" | tr -d ' ')
+        printf '{"exists":true,"path":"%s","lines":%s}' "$(json_escape "$path")" "$lines"
+    else
+        printf '{"exists":false,"path":"%s"}' "$(json_escape "$path")"
+    fi
+}
+
+# ── CLI Construction ────────────────────────────────────────────────────────
+
+# Generate sandbox settings JSON for Claude sessions.
+# Grants write access to the workflow dir, repo, and any additional dirs
+# via sandbox.filesystem.allowWrite so the agent can modify files without
+# permission prompts.
+_gen_sandbox_settings() {
+    local wf_dir=$1 repo=$2 add_dirs=${3:-}
+    local settings_file="$wf_dir/prompts/.sandbox-settings.json"
+
+    # Build allowWrite array: workflow dir + repo + global memory dir + additional dirs
+    # Paths use // prefix for absolute paths per Claude sandbox convention
+    local allow_write="\"/${wf_dir}\",\"/${repo}\",\"/${MEMORY_DIR}\""
+    if [[ -n "$add_dirs" ]]; then
+        local _dirs _dir
+        IFS=',' read -ra _dirs <<< "$add_dirs"
+        for _dir in "${_dirs[@]}"; do
+            [[ -n "$_dir" ]] && allow_write+=",\"/${_dir}\""
+        done
+    fi
+
+    mkdir -p "$wf_dir/prompts"
+    cat > "$settings_file" <<SETTINGS_EOF
+{
+  "sandbox": {
+    "enabled": true,
+    "filesystem": {
+      "allowWrite": [${allow_write}]
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Edit(*)",
+      "Write(*)",
+      "Glob(*)",
+      "Grep(*)"
+    ]
+  }
+}
+SETTINGS_EOF
+    echo "$settings_file"
+}
+
+# Build --add-dir args into global LAUNCH_ARGS array (avoids bash 3.2 nameref issues)
+_build_launch_args() {
+    local wf_dir=$1 add_dirs=$2
+    LAUNCH_ARGS=(--add-dir "$wf_dir" --add-dir "$MEMORY_DIR")
+    if [[ -n "$add_dirs" ]]; then
+        local _dirs _dir
+        IFS=',' read -ra _dirs <<< "$add_dirs"
+        for _dir in "${_dirs[@]}"; do
+            [[ -n "$_dir" ]] && LAUNCH_ARGS+=(--add-dir "$_dir")
+        done
+    fi
+}
+
+launch_agent() {
+    local agent=$1 repo=$2 prompt_file=$3 wf_dir=$4 add_dirs=${5:-}
+    local adapter command display prompt
+
+    adapter=$(get_agent_prop "$agent" "adapter")
+    command=$(get_agent_prop "$agent" "command")
+    display=$(get_agent_prop "$agent" "display_name")
+
+    # Claude reads files natively, so point it to the prompt file.
+    # Codex needs the full prompt content inline (including general instructions).
+    if [[ "$adapter" == "codex" ]]; then
+        local general_file="$wf_dir/prompts/general.md"
+        if [[ -f "$general_file" ]]; then
+            prompt="$(cat "$general_file")
+
+---
+
+$(cat "$prompt_file")"
+        else
+            prompt=$(cat "$prompt_file")
+        fi
+    else
+        prompt="Read and follow the instructions at ${prompt_file}"
+    fi
+
+    require_agent_command "$agent"
+
+    local repo
+    repo=$(get_conf "$wf_dir" "repo")
+    _build_launch_args "$wf_dir" "$add_dirs"
+
+    echo -e "  ${DIM}Launching ${display} in ${repo}${NC}"
+    echo -e "  ${DIM}Exit the session when done${NC}"
+    echo ""
+
+    case "$adapter" in
+        claude)
+            local settings_file
+            settings_file=$(_gen_sandbox_settings "$wf_dir" "$repo" "$add_dirs")
+            (cd "$repo" && "$command" --permission-mode auto --settings "$settings_file" "${LAUNCH_ARGS[@]}" -- "$prompt") || true
+            ;;
+        codex)
+            "$command" --full-auto -C "$repo" "${LAUNCH_ARGS[@]}" -- "$prompt" || true
+            ;;
+        *)
+            die "Unsupported agent adapter '${adapter}' for agent '${agent}'"
+            ;;
+    esac
+}
+
+# ── Prompt Generation ───────────────────────────────────────────────────────
+
+gen_general_instructions() {
+    local d=$1
+    local desc repo add_dirs
+    desc=$(get_description "$d")
+    repo=$(get_conf "$d" "repo")
+    add_dirs=$(get_conf "$d" "add_dirs")
+
+    mkdir -p "$d/prompts"
+
+    # ── Static instructions (no variable interpolation) ──
+    cat > "$d/prompts/general.md" <<'GENERAL_EOF'
+# Crossagent — General Instructions
+
+These instructions apply to **every phase** of the Crossagent workflow.
+Read and absorb them before proceeding with your phase-specific task.
+
+---
+
+## 1. Output File Gate
+
+Before doing any work, check whether your phase's output file already exists:
+
+| Phase     | Output file      |
+|-----------|------------------|
+| Plan      | `plan.md`        |
+| Review    | `review.md`      |
+| Implement | `implement.md`   |
+| Verify    | `verify.md`      |
+
+**If the output file for your current phase already exists and contains
+substantive content, SKIP this phase entirely.** Simply respond:
+"Output file already exists — skipping this phase." and exit.
+
+This prevents duplicate work when a phase is re-run after completion.
+If the `--force` flag context is mentioned in your phase prompt, ignore
+this gate and proceed regardless.
+
+## 2. Execution Mode
+
+You are running in **sandboxed auto-accept mode**. This means:
+
+- All file edits and shell commands within the sandbox boundaries are
+  automatically approved — you will NOT be prompted for permission
+- The **workflow directory** (where artifacts like `plan.md`, `review.md`,
+  etc. live) has been granted write access via sandbox settings — read
+  and write freely without permission prompts
+- The **repository directory** and any additional directories are also
+  in your allowed workspace — explore and modify code as needed
+- The sandbox enforces filesystem boundaries: you can only write to
+  directories explicitly granted in the sandbox configuration
+- Despite auto-accept, exercise good judgment: do not run destructive
+  commands (e.g., `rm -rf /`, `git push --force`) unless explicitly
+  required by the task
+- Focus on completing your phase efficiently without unnecessary pauses
+
+## 3. Workflow Context
+
+You are one agent in a multi-phase, multi-model workflow:
+1. **Plan** — create a structured implementation plan
+2. **Review** — critically review the plan against the codebase
+3. **Implement** — execute the reviewed plan
+4. **Verify** — independently verify the implementation
+
+Each phase is handled by a potentially different AI model. Write your
+output so that a different model (with no shared memory) can pick up
+where you left off. Be explicit, reference file paths, and avoid
+ambiguous pronouns like "the function" without naming it.
+
+## 4. File & Path Conventions
+
+- All workflow artifacts live in the workflow directory (provided via
+  `--add-dir`). Reference files by their full absolute path.
+- Write output files to the **exact path** specified in your phase
+  prompt. The orchestrator detects phase completion by checking for
+  these files.
+- Do NOT rename, move, or delete other phase artifacts (plan.md,
+  review.md, implement.md, verify.md).
+- **Memory files are shared metadata** — all phase agents may read
+  and update \`memory.md\` (workflow) and files under
+  \`~/.crossagent/memory/\` (global). See the Memory System section below.
+
+## 5. Communication Style
+
+- Be precise and actionable — avoid vague statements
+- Use markdown formatting consistently
+- When referencing code, include file paths and line numbers
+- When listing changes, group by file
+- Keep output concise but complete
+
+## 6. Error Handling
+
+- If you encounter an error that blocks your phase, document it clearly
+  in your output file with a `## Blocked` section explaining what went
+  wrong and what the user needs to do
+- Still write the output file even if the phase could not fully complete —
+  this allows the workflow to advance and the user to see what happened
+- Never silently fail; always leave a written trace
+
+## 7. Codebase Respect
+
+- Follow existing code conventions, naming patterns, and project structure
+- Read relevant existing code before making changes or recommendations
+- Do not introduce unnecessary dependencies
+- Do not refactor code outside the scope of the current task
+## 8. Memory System
+
+Crossagent maintains a persistent memory system to accumulate knowledge
+across phases and workflows:
+
+- **Workflow memory** (\`memory.md\` in the workflow directory) — tracks
+  decisions, findings, and session notes for this specific workflow.
+  All phase agents should update this after completing their work.
+- **Global memory** (\`~/.crossagent/memory/\`) — captures cross-workflow
+  patterns, conventions, and lessons learned. Update only when you
+  discover genuinely reusable knowledge.
+
+Memory files are provided via \`--add-dir\` and sandbox settings.
+Your phase prompt includes specific memory update instructions.
+GENERAL_EOF
+
+    # ── Dynamic section: workspace directories (interpolated) ──
+    cat >> "$d/prompts/general.md" <<DIRS_EOF
+
+## 9. Workspace Directories
+
+**IMPORTANT: At the very start of your session, before doing any other
+work, register ALL workspace directories listed below.**
+
+For **Claude Code**, run the \`/add-dir\` slash command for each directory:
+\`\`\`
+/add-dir ${d}
+/add-dir ${repo}
+/add-dir ${MEMORY_DIR}
+DIRS_EOF
+
+    # Append each additional directory
+    if [[ -n "$add_dirs" ]]; then
+        local _dirs _dir
+        IFS=',' read -ra _dirs <<< "$add_dirs"
+        for _dir in "${_dirs[@]}"; do
+            [[ -n "$_dir" ]] && echo "/add-dir ${_dir}" >> "$d/prompts/general.md"
+        done
+    fi
+
+    cat >> "$d/prompts/general.md" <<'DIRS_TAIL'
+```
+
+For **Codex CLI**, these directories are already passed via `-C` and
+`--add-dir` CLI flags. No additional action is needed.
+
+This ensures you have full read/write access to:
+DIRS_TAIL
+
+    # List the directories with descriptions
+    cat >> "$d/prompts/general.md" <<DIRS_LIST
+- **Workflow directory**: \`${d}\` — where phase artifacts (plan.md, review.md, etc.) live
+- **Primary repository**: \`${repo}\` — the main codebase
+- **Global memory**: \`${MEMORY_DIR}\` — cross-workflow patterns and lessons learned
+DIRS_LIST
+
+    if [[ -n "$add_dirs" ]]; then
+        local _dirs _dir
+        IFS=',' read -ra _dirs <<< "$add_dirs"
+        for _dir in "${_dirs[@]}"; do
+            [[ -n "$_dir" ]] && echo "- **Additional directory**: \`${_dir}\`" >> "$d/prompts/general.md"
+        done
+    fi
+
+    cat >> "$d/prompts/general.md" <<'DIRS_END'
+
+Without registering these directories, you may encounter permission
+errors when trying to read or modify files outside your initial
+working directory. Always register them first.
+DIRS_END
+
+    echo "$d/prompts/general.md"
+}
+
+gen_memory_context() {
+    local d=$1
+    local mem_dir="$CROSSAGENT_HOME/memory"
+    local ctx=""
+
+    # Include workflow memory if it exists and has content
+    if [[ -f "$d/memory.md" ]]; then
+        ctx+="## Workflow Memory
+
+The following is accumulated context from this workflow. Use it to inform
+your work and update it with new learnings when done.
+
+<workflow-memory>
+$(cat "$d/memory.md")
+</workflow-memory>
+
+"
+    fi
+
+    # Include global context if it has been edited beyond the default template
+    # (check for Changelog entries — default template has an empty table)
+    if [[ -f "$mem_dir/global-context.md" ]]; then
+        local has_entries
+        has_entries=$(grep -c '^|[^-]' "$mem_dir/global-context.md" 2>/dev/null || true)
+        # Default template has exactly 1 header row in the table; >1 means real entries exist
+        if [[ "$has_entries" -gt 1 ]]; then
+            ctx+="## Global Context
+
+The following is accumulated knowledge from previous workflows on this
+and other projects. Reference it for patterns and conventions.
+
+<global-context>
+$(cat "$mem_dir/global-context.md")
+</global-context>
+
+"
+        fi
+    fi
+
+    printf '%s' "$ctx"
+}
+
+gen_memory_update_instructions() {
+    local d=$1 phase_name=$2
+    local mem_dir="$CROSSAGENT_HOME/memory"
+    cat <<EOF
+
+## Memory Update Instructions
+
+After completing your ${phase_name} work, update the memory files:
+
+### Workflow Memory (REQUIRED)
+Update \`${d}/memory.md\` with:
+- Decisions made during this phase (add to Decisions Log table)
+- Key findings or discoveries (add to Key Findings)
+- Session notes summarizing what was done
+
+### Global Context (IF new patterns discovered)
+If you discovered reusable patterns, conventions, or pitfalls that would
+benefit future workflows, append them to:
+\`${mem_dir}/global-context.md\`
+
+Only add genuinely new, reusable knowledge — not workflow-specific details.
+Add a Changelog entry with today's date and the source workflow name.
+
+### Lessons Learned (IF issues encountered)
+If you encountered process issues, rework, or discovered improvements to
+how Crossagent workflows should be run, append to:
+\`${mem_dir}/lessons-learned.md\`
+EOF
+}
+
+gen_plan_prompt() {
+    local d=$1
+    local desc plan_path desc_path general_path
+    desc=$(get_description "$d")
+    plan_path="$d/plan.md"
+    desc_path="$d/description"
+    general_path=$(gen_general_instructions "$d")
+
+    mkdir -p "$d/prompts"
+    cat > "$d/prompts/plan.md" <<EOF
+> **Before starting, read the general instructions at:**
+> \`${general_path}\`
+
+# Crossagent Phase 1: Create Implementation Plan
+
+## Your Role
+You are the **Planner** in a dual-model AI workflow. Your plan will be
+reviewed by a second AI model before implementation begins.
+
+## Feature Request
+${desc}
+
+(Full description file: \`${desc_path}\`)
+
+## Step 1: Understand the Request
+Before planning, make sure you fully understand what is being asked.
+
+- Read the feature request above carefully
+- Explore the codebase to understand the current architecture, patterns,
+  and conventions
+- If any of the following are unclear, **ask the user before proceeding**:
+  - The scope of the change (what is in/out of scope)
+  - Expected behavior or acceptance criteria
+  - Constraints (backward compatibility, performance, dependencies)
+  - Which parts of the codebase are relevant
+- Keep your questions concise and grouped — ask once, not piecemeal
+- Once you have enough clarity, proceed to Step 2
+
+## Step 2: Write the Plan
+Create a detailed, actionable implementation plan and **write it to:**
+\`${plan_path}\`
+
+### Required Plan Sections
+
+#### 1. Overview
+What changes are needed, why, and what the end result looks like.
+
+#### 2. Affected Files
+Every file that needs creation, modification, or deletion.
+Include full paths and a one-line summary of changes per file.
+
+#### 3. Implementation Phases
+Break work into 2-5 ordered phases. Each phase must be:
+- Independently testable
+- Completable in one session
+- Clearly scoped with specific files and changes listed
+
+For each phase include:
+- **Goal** — what this phase accomplishes
+- **Files** — exact files to create/modify
+- **Changes** — specific changes to make (not vague descriptions)
+- **Test gate** — how to verify this phase is complete
+
+#### 4. Risks & Edge Cases
+What could go wrong and how to mitigate it.
+
+#### 5. Open Questions
+Any unresolved decisions or trade-offs for the reviewer to weigh in on.
+
+## CRITICAL
+You MUST write the completed plan as a markdown file to:
+\`${plan_path}\`
+The next workflow phase depends on this file existing.
+EOF
+
+    # Append revert context if this is a retry — with surgical instructions
+    if [[ -f "$d/prompts/revert-context.md" ]]; then
+        local attempt_num
+        attempt_num=$(get_conf "$d" "retry_count")
+        attempt_num=${attempt_num:-1}
+
+        printf '\n---\n\n' >> "$d/prompts/plan.md"
+        cat >> "$d/prompts/plan.md" <<RETRY_EOF
+# RETRY MODE — Surgical Plan Update (Attempt ${attempt_num})
+
+**This is NOT a fresh planning session.** A previous plan exists as
+\`plan.attempt-${attempt_num}.md\` — start from that plan and make
+targeted updates to address the issues below.
+
+## What to do:
+1. Read the previous plan at \`${d}/plan.attempt-${attempt_num}.md\`
+2. Read the issues/feedback below carefully
+3. Update ONLY the parts of the plan that address the specific issues
+4. Keep all sections that were NOT flagged — do not rewrite them
+5. Write the updated plan to \`${plan_path}\`
+
+RETRY_EOF
+        cat "$d/prompts/revert-context.md" >> "$d/prompts/plan.md"
+    fi
+
+    # Inject accumulated memory context
+    local memory_ctx
+    memory_ctx=$(gen_memory_context "$d")
+    if [[ -n "$memory_ctx" ]]; then
+        cat >> "$d/prompts/plan.md" <<MEMEOF
+
+---
+
+# Accumulated Context
+
+${memory_ctx}
+MEMEOF
+    fi
+
+    # Add memory update instructions
+    gen_memory_update_instructions "$d" "Plan" >> "$d/prompts/plan.md"
+
+    echo "$d/prompts/plan.md"
+}
+
+gen_review_prompt() {
+    local d=$1
+    local plan_path="$d/plan.md"
+    local review_path="$d/review.md"
+    local general_path
+    general_path=$(gen_general_instructions "$d")
+
+    mkdir -p "$d/prompts"
+    cat > "$d/prompts/review.md" <<EOF
+> **Before starting, read the general instructions at:**
+> \`${general_path}\`
+
+# Crossagent Phase 2: Review Implementation Plan
+
+## Your Role
+You are the **Reviewer** in a dual-model AI workflow. A plan was created
+by another AI agent. Review it with fresh eyes and a
+critical perspective.
+
+## Instructions
+1. Read the plan at: \`${plan_path}\`
+2. Cross-reference against the actual codebase
+3. **Write your review to:** \`${review_path}\`
+
+## Review Criteria
+- **Completeness** — Any missing files, steps, or dependencies?
+- **Correctness** — Does the approach match existing code patterns?
+- **Edge Cases** — What scenarios are not handled?
+- **Race Conditions** — Any concurrency or ordering issues?
+- **Test Coverage** — Are test gates sufficient?
+- **Security** — Any vulnerabilities in the proposed approach?
+- **Performance** — Any potential bottlenecks?
+
+## Required Review Format
+
+### Issues (Must Fix)
+Critical problems that must be addressed before implementation.
+
+### Suggestions (Nice to Have)
+Optional improvements worth considering.
+
+### Phase Assessment
+For each implementation phase: APPROVE / NEEDS CHANGES (with details).
+
+### Verdict
+One of: **APPROVE** | **APPROVE WITH CHANGES** | **REQUEST REWORK**
+
+## CRITICAL
+You MUST write your review to: \`${review_path}\`
+The implementation phase depends on this file.
+EOF
+
+    # If this is a retry, inform the reviewer about the context
+    if [[ -f "$d/prompts/revert-context.md" ]]; then
+        local attempt_num
+        attempt_num=$(get_conf "$d" "retry_count")
+        attempt_num=${attempt_num:-1}
+
+        printf '\n---\n\n' >> "$d/prompts/review.md"
+        cat >> "$d/prompts/review.md" <<RETRY_EOF
+# RETRY CONTEXT (Attempt ${attempt_num})
+
+This plan has been revised from a previous attempt. A previous review
+exists at \`${d}/review.attempt-${attempt_num}.md\`. The plan was
+updated to address issues from that review.
+
+When reviewing, pay special attention to:
+1. Whether the previously flagged issues have been adequately addressed
+2. Whether the revisions introduced any new problems
+3. Do NOT re-raise issues that have been properly resolved
+RETRY_EOF
+    fi
+
+    # Inject accumulated memory context
+    local memory_ctx
+    memory_ctx=$(gen_memory_context "$d")
+    if [[ -n "$memory_ctx" ]]; then
+        cat >> "$d/prompts/review.md" <<MEMEOF
+
+---
+
+# Accumulated Context
+
+${memory_ctx}
+MEMEOF
+    fi
+
+    # Add memory update instructions
+    gen_memory_update_instructions "$d" "Review" >> "$d/prompts/review.md"
+
+    echo "$d/prompts/review.md"
+}
+
+gen_implement_prompt() {
+    local d=$1 impl_phase=${2:-1}
+    local plan_path="$d/plan.md"
+    local review_path="$d/review.md"
+    local impl_report_path="$d/implement.md"
+    local general_path
+    general_path=$(gen_general_instructions "$d")
+
+    mkdir -p "$d/prompts"
+    cat > "$d/prompts/implement.md" <<EOF
+> **Before starting, read the general instructions at:**
+> \`${general_path}\`
+
+# Crossagent Phase 3: Implement (Phase ${impl_phase})
+
+## Your Role
+You are the **Implementer** in a dual-model AI workflow. A plan was created
+and reviewed. Now implement it faithfully.
+
+## Context Files
+1. **Implementation plan:** \`${plan_path}\`
+2. **Review feedback:** \`${review_path}\`
+
+Read both files before starting.
+
+## Task
+Implement **Phase ${impl_phase}** of the plan.
+
+## Guidelines
+- Follow the plan closely — it has been reviewed
+- Address any review issues related to this phase
+- Run tests after implementation to confirm test gates pass
+- If you must deviate from the plan, clearly document why
+- Do NOT implement phases beyond Phase ${impl_phase}
+- Commit changes with a descriptive message
+
+## When Done
+After completing the implementation, write a brief summary to:
+\`${impl_report_path}\`
+
+Include:
+- What was implemented
+- Any deviations from the plan and why
+- Test results
+
+This file signals that the implementation phase is complete.
+The next phase (verification by a second AI model) depends on this file.
+EOF
+
+    # Append revert context if this is a retry — with surgical instructions
+    if [[ -f "$d/prompts/revert-context.md" ]]; then
+        local attempt_num
+        attempt_num=$(get_conf "$d" "retry_count")
+        attempt_num=${attempt_num:-1}
+
+        printf '\n---\n\n' >> "$d/prompts/implement.md"
+        cat >> "$d/prompts/implement.md" <<RETRY_EOF
+# RETRY MODE — Surgical Implementation Fix (Attempt ${attempt_num})
+
+**This is NOT a fresh implementation.** Code from the previous attempt
+is already in the repository. You must make TARGETED FIXES only.
+
+## What to do:
+1. Read the specific issues listed below from the verifier
+2. For each issue, go to the exact file and location mentioned
+3. Make the minimum code change needed to resolve that issue
+4. Do NOT rewrite, refactor, or redo code that was not flagged
+5. Run tests to confirm fixes work
+6. Write your summary to \`${impl_report_path}\`
+
+## What NOT to do:
+- Do NOT re-implement features that already work
+- Do NOT restructure or reorganize code unless the issue requires it
+- Do NOT add unrelated improvements or cleanup
+- Do NOT revert working changes from the previous attempt
+
+RETRY_EOF
+        cat "$d/prompts/revert-context.md" >> "$d/prompts/implement.md"
+    fi
+
+    # Inject accumulated memory context
+    local memory_ctx
+    memory_ctx=$(gen_memory_context "$d")
+    if [[ -n "$memory_ctx" ]]; then
+        cat >> "$d/prompts/implement.md" <<MEMEOF
+
+---
+
+# Accumulated Context
+
+${memory_ctx}
+MEMEOF
+    fi
+
+    # Add memory update instructions
+    gen_memory_update_instructions "$d" "Implement" >> "$d/prompts/implement.md"
+
+    echo "$d/prompts/implement.md"
+}
+
+gen_verify_prompt() {
+    local d=$1
+    local plan_path="$d/plan.md"
+    local review_path="$d/review.md"
+    local verify_path="$d/verify.md"
+    local general_path
+    general_path=$(gen_general_instructions "$d")
+
+    mkdir -p "$d/prompts"
+    cat > "$d/prompts/verify.md" <<EOF
+> **Before starting, read the general instructions at:**
+> \`${general_path}\`
+
+# Crossagent Phase 4: Verify Implementation
+
+## Your Role
+You are the **Verifier** in a dual-model AI workflow. Code was implemented
+by another AI model. Independently verify the quality and correctness.
+
+## Context Files
+1. **Original plan:** \`${plan_path}\`
+2. **Review notes:** \`${review_path}\`
+3. Examine git changes: run \`git diff\` and \`git log --oneline -20\`
+
+## Verification Checklist
+1. **Plan Adherence** — Does implementation match the plan?
+2. **Review Compliance** — Were review issues addressed?
+3. **Code Quality** — Error handling, naming, patterns, idioms
+4. **Test Coverage** — Do tests cover the changes?
+5. **Security** — Any vulnerabilities introduced?
+6. **Performance** — Any obvious bottlenecks?
+
+## Required Report Format
+
+### Status
+One of: **PASS** | **PASS WITH NOTES** | **FAIL**
+
+### Plan Drift
+Deviations from the plan and whether they are justified.
+
+### Issues Found
+Problems that should be fixed before merging.
+
+### Positive Notes
+Things done well.
+
+### Recommendation
+One of: **Ship it** | **Fix issues first** | **Needs rework**
+
+## CRITICAL
+You MUST write the verification report to: \`${verify_path}\`
+EOF
+
+    # If this is a retry, inform the verifier about previous issues
+    if [[ -f "$d/prompts/revert-context.md" ]]; then
+        local attempt_num
+        attempt_num=$(get_conf "$d" "retry_count")
+        attempt_num=${attempt_num:-1}
+
+        printf '\n---\n\n' >> "$d/prompts/verify.md"
+        cat >> "$d/prompts/verify.md" <<RETRY_EOF
+# RETRY VERIFICATION (Attempt ${attempt_num})
+
+This is a re-verification after a previous attempt failed. The previous
+verification report is at \`${d}/verify.attempt-${attempt_num}.md\`.
+
+When verifying:
+1. Check whether each issue from the previous report has been resolved
+2. For each previously flagged issue, confirm the fix is correct
+3. Note any issues that remain unfixed
+4. Check whether the fixes introduced any new problems
+5. If all previous issues are resolved and no new issues exist, **PASS**
+RETRY_EOF
+    fi
+
+    # Inject accumulated memory context
+    local memory_ctx
+    memory_ctx=$(gen_memory_context "$d")
+    if [[ -n "$memory_ctx" ]]; then
+        cat >> "$d/prompts/verify.md" <<MEMEOF
+
+---
+
+# Accumulated Context
+
+${memory_ctx}
+MEMEOF
+    fi
+
+    # Add memory update instructions
+    gen_memory_update_instructions "$d" "Verify" >> "$d/prompts/verify.md"
+
+    echo "$d/prompts/verify.md"
+}
+
+# ── Verdict Parsing ─────────────────────────────────────────────────────────
+
+# Parse verify.md and return a structured verdict.
+# Outputs lines: verdict=<pass|fix|rework|unknown>, status=<text>, recommendation=<text>
+judge_verify() {
+    local verify_file="$1"
+    [[ -f "$verify_file" ]] || { echo "verdict=missing"; return 1; }
+
+    local status_val="" rec_val="" verdict
+    local in_status=false in_rec=false
+
+    # Read verify.md line by line.  When we hit a "Status" or
+    # "Recommendation" heading, capture the first non-empty line after it.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Detect section headers
+        if echo "$line" | grep -qi '^#\{1,4\}[[:space:]]*status'; then
+            in_status=true; in_rec=false; continue
+        fi
+        if echo "$line" | grep -qi '^#\{1,4\}[[:space:]]*recommendation'; then
+            in_rec=true; in_status=false; continue
+        fi
+
+        # Capture first non-empty line after header
+        local stripped
+        stripped=$(echo "$line" | sed 's/^[[:space:]]*//')
+        [[ -z "$stripped" ]] && continue
+
+        if $in_status; then
+            status_val=$(echo "$stripped" | sed 's/\*//g')
+            in_status=false
+        fi
+        if $in_rec; then
+            rec_val=$(echo "$stripped" | sed 's/\*//g')
+            in_rec=false
+        fi
+    done < "$verify_file"
+
+    # Determine verdict from recommendation (primary) then status (fallback)
+    local combined
+    combined=$(echo "$rec_val $status_val" | tr '[:upper:]' '[:lower:]')
+
+    if echo "$combined" | grep -qi 'ship it'; then
+        verdict="pass"
+    elif echo "$combined" | grep -qi 'needs rework'; then
+        verdict="rework"
+    elif echo "$combined" | grep -qi 'fix issues'; then
+        verdict="fix"
+    elif echo "$combined" | grep -qi 'pass'; then
+        verdict="pass"
+    elif echo "$combined" | grep -qi 'fail'; then
+        verdict="fix"
+    else
+        verdict="unknown"
+    fi
+
+    echo "verdict=${verdict}"
+    echo "status=${status_val}"
+    echo "recommendation=${rec_val}"
+}
+
+# Parse review.md and return a structured verdict.
+# Review format has: ### Verdict — APPROVE | APPROVE WITH CHANGES | REQUEST REWORK
+judge_review() {
+    local review_file="$1"
+    [[ -f "$review_file" ]] || { echo "verdict=missing"; return 1; }
+
+    local verdict_val="" verdict
+    local in_verdict=false
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if echo "$line" | grep -qi '^#\{1,4\}[[:space:]]*verdict'; then
+            in_verdict=true; continue
+        fi
+
+        local stripped
+        stripped=$(echo "$line" | sed 's/^[[:space:]]*//')
+        [[ -z "$stripped" ]] && continue
+
+        if $in_verdict; then
+            verdict_val=$(echo "$stripped" | sed 's/\*//g')
+            in_verdict=false
+        fi
+    done < "$review_file"
+
+    local combined
+    combined=$(echo "$verdict_val" | tr '[:upper:]' '[:lower:]')
+
+    if echo "$combined" | grep -qi 'request rework'; then
+        verdict="rework"
+    elif echo "$combined" | grep -qi 'approve with changes'; then
+        verdict="approve_with_changes"
+    elif echo "$combined" | grep -qi 'approve'; then
+        verdict="approve"
+    else
+        verdict="unknown"
+    fi
+
+    echo "verdict=${verdict}"
+    echo "review_verdict=${verdict_val}"
+}
+
+# ── Commands ────────────────────────────────────────────────────────────────
+
+cmd_new() {
+    local name="" repo="" add_dirs=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --repo)
+                require_option_arg "$1" "${2:-}"
+                repo="$2"
+                shift 2
+                ;;
+            --add-dir)
+                require_option_arg "$1" "${2:-}"
+                local resolved_add_dir
+                resolved_add_dir=$(resolve_dir "Additional directory" "$2")
+                add_dirs="${add_dirs:+${add_dirs},}${resolved_add_dir}"
+                shift 2
+                ;;
+            -h|--help)   echo "Usage: crossagent new <name> [--repo <path>] [--add-dir <path>]..."; exit 0 ;;
+            -*)          die "Unknown option: $1" ;;
+            *)           name="$1"; shift ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && die "Usage: crossagent new <name> [--repo <path>] [--add-dir <path>]..."
+
+    # Sanitize
+    name=$(echo "$name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g')
+    [[ -z "$name" ]] && die "Invalid workflow name after sanitization."
+
+    ensure_dirs
+    local d="$WORKFLOWS_DIR/$name"
+    [[ -d "$d" ]] && die "Workflow '${name}' already exists. Use ${BOLD}crossagent use ${name}${NC} to switch to it."
+
+    mkdir -p "$d/prompts"
+
+    # Default repo to cwd
+    repo="${repo:-$(pwd)}"
+    repo=$(resolve_dir "Repository" "$repo")
+
+    set_conf "$d" "repo" "$repo"
+    set_conf "$d" "add_dirs" "$add_dirs"
+    set_conf "$d" "created" "$(date '+%Y-%m-%d %H:%M')"
+
+    echo ""
+    echo -e "  ${BOLD}New Workflow: ${name}${NC}"
+    separator
+    echo -e "  ${DIM}Repository:${NC} $repo"
+    [[ -n "$add_dirs" ]] && echo -e "  ${DIM}Extra dirs:${NC} $add_dirs"
+    echo ""
+
+    # Read description
+    if [[ -t 0 ]]; then
+        echo -e "  Describe the feature/task ${DIM}(empty line to finish):${NC}"
+        echo ""
+        local desc="" line
+        while IFS= read -r -p "  > " line; do
+            [[ -z "$line" && -n "$desc" ]] && break
+            desc="${desc}${desc:+$'\n'}${line}"
+        done
+    else
+        local desc
+        desc=$(cat)
+    fi
+
+    [[ -z "$desc" ]] && { rm -rf "$d"; die "Description cannot be empty."; }
+
+    echo "$desc" > "$d/description"
+    set_phase "$d" "1"
+    set_current "$name"
+    init_workflow_memory "$d" "$name" "$desc" "$repo"
+
+    echo ""
+    success "Workflow '${name}' created"
+    success "Current phase: ${BOLD}1 — Plan${NC}"
+    echo ""
+    echo -e "  Next: ${BOLD}crossagent plan${NC}"
+    echo ""
+}
+
+cmd_plan() {
+    local force=false
+    [[ "${1:-}" == "--force" ]] && force=true
+
+    local name d phase pn agent display
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+    pn=$(phase_num "$phase")
+
+    [[ "$pn" -gt 1 && "$force" == false ]] && { warn "Plan phase done. Use --force to redo."; return 0; }
+
+    local repo add_dirs
+    repo=$(get_conf "$d" "repo"); add_dirs=$(get_conf "$d" "add_dirs")
+    agent=$(get_phase_agent "$d" 1)
+    display=$(get_agent_prop "$agent" "display_name")
+
+    phase_banner 1 "$name" "$display"
+
+    local prompt_file
+    prompt_file=$(gen_plan_prompt "$d")
+    info "Prompt:  ${prompt_file}"
+    info "Output:  ${d}/plan.md"
+    separator
+
+    info "Agent:   ${agent} (${display})"
+    launch_agent "$agent" "$repo" "$prompt_file" "$d" "$add_dirs"
+
+    echo ""
+    if [[ -f "$d/plan.md" ]]; then
+        success "Plan created: ${d}/plan.md"
+        set_phase "$d" "2"
+        echo ""
+        echo -e "  Next: ${BOLD}crossagent review${NC}"
+    else
+        warn "Plan file not found at: ${d}/plan.md"
+        warn "If Claude wrote it elsewhere, copy it there manually."
+        echo -e "  Then: ${BOLD}crossagent advance${NC} to proceed to Phase 2"
+    fi
+    echo ""
+}
+
+cmd_review() {
+    local force=false
+    [[ "${1:-}" == "--force" ]] && force=true
+
+    local name d phase pn agent display
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+    pn=$(phase_num "$phase")
+
+    [[ "$pn" -lt 2 ]] && die "Complete Phase 1 first. Run: ${BOLD}crossagent plan${NC}"
+    [[ "$pn" -gt 2 && "$force" == false ]] && { warn "Review phase done. Use --force to redo."; return 0; }
+    [[ ! -f "$d/plan.md" ]] && die "Plan file missing: ${d}/plan.md"
+
+    local repo add_dirs
+    repo=$(get_conf "$d" "repo"); add_dirs=$(get_conf "$d" "add_dirs")
+    agent=$(get_phase_agent "$d" 2)
+    display=$(get_agent_prop "$agent" "display_name")
+
+    phase_banner 2 "$name" "$display"
+
+    local prompt_file
+    prompt_file=$(gen_review_prompt "$d")
+    info "Prompt:  ${prompt_file}"
+    info "Output:  ${d}/review.md"
+    separator
+
+    info "Agent:   ${agent} (${display})"
+    launch_agent "$agent" "$repo" "$prompt_file" "$d" "$add_dirs"
+
+    echo ""
+    if [[ -f "$d/review.md" ]]; then
+        success "Review created: ${d}/review.md"
+        set_phase "$d" "3"
+        echo ""
+        echo -e "  Next: ${BOLD}crossagent implement${NC}"
+    else
+        warn "Review file not found at: ${d}/review.md"
+        echo -e "  Then: ${BOLD}crossagent advance${NC} to proceed to Phase 3"
+    fi
+    echo ""
+}
+
+cmd_implement() {
+    local force=false impl_phase=1
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --phase)
+                require_option_arg "$1" "${2:-}"
+                impl_phase="$2"
+                shift 2
+                ;;
+            --force)  force=true; shift ;;
+            -*)       die "Unknown option: $1" ;;
+            *)        shift ;;
+        esac
+    done
+
+    [[ "$impl_phase" =~ ^[1-9][0-9]*$ ]] || die "Implementation phase must be a positive integer."
+
+    local name d phase pn agent display
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+    pn=$(phase_num "$phase")
+
+    [[ "$pn" -gt 4 && "$force" == false ]] && { warn "Workflow is complete. Use --force to redo."; return 0; }
+    [[ "$pn" -lt 3 ]] && die "Complete Phase 2 first. Run: ${BOLD}crossagent review${NC}"
+
+    local repo add_dirs
+    repo=$(get_conf "$d" "repo"); add_dirs=$(get_conf "$d" "add_dirs")
+    agent=$(get_phase_agent "$d" 3)
+    display=$(get_agent_prop "$agent" "display_name")
+
+    phase_banner 3 "$name" "$display"
+    info "Implementation sub-phase: ${impl_phase}"
+    separator
+
+    local prompt_file
+    prompt_file=$(gen_implement_prompt "$d" "$impl_phase")
+    info "Prompt:  ${prompt_file}"
+
+    info "Agent:   ${agent} (${display})"
+    launch_agent "$agent" "$repo" "$prompt_file" "$d" "$add_dirs"
+
+    echo ""
+    success "Implementation session complete"
+    set_phase "$d" "4"
+    echo ""
+    echo -e "  Next: ${BOLD}crossagent verify${NC}"
+    echo -e "  ${DIM}Or run another sub-phase: crossagent implement --phase $((impl_phase + 1))${NC}"
+    echo ""
+}
+
+cmd_verify() {
+    local force=false
+    [[ "${1:-}" == "--force" ]] && force=true
+
+    local name d phase pn agent display
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+    pn=$(phase_num "$phase")
+
+    [[ "$pn" -gt 4 && "$force" == false ]] && { warn "Workflow is complete. Use --force to redo."; return 0; }
+    [[ "$pn" -lt 4 ]] && die "Complete Phase 3 first. Run: ${BOLD}crossagent implement${NC}"
+
+    local repo add_dirs
+    repo=$(get_conf "$d" "repo"); add_dirs=$(get_conf "$d" "add_dirs")
+    agent=$(get_phase_agent "$d" 4)
+    display=$(get_agent_prop "$agent" "display_name")
+
+    phase_banner 4 "$name" "$display"
+
+    local prompt_file
+    prompt_file=$(gen_verify_prompt "$d")
+    info "Prompt:  ${prompt_file}"
+    info "Output:  ${d}/verify.md"
+    separator
+
+    info "Agent:   ${agent} (${display})"
+    launch_agent "$agent" "$repo" "$prompt_file" "$d" "$add_dirs"
+
+    echo ""
+    if [[ -f "$d/verify.md" ]]; then
+        success "Verification report: ${d}/verify.md"
+        set_phase "$d" "done"
+        echo ""
+        echo -e "  ${GREEN}${BOLD}Workflow complete!${NC}"
+        echo -e "  Review the report and address any issues found."
+    else
+        warn "Verification report not found at: ${d}/verify.md"
+        echo -e "  Then: ${BOLD}crossagent done${NC} to mark complete"
+    fi
+    echo ""
+}
+
+cmd_status() {
+    local json_mode=false
+    [[ "${1:-}" == "--json" ]] && json_mode=true
+
+    local name
+    name=$(get_current)
+    if [[ -z "$name" ]]; then
+        $json_mode && { echo '{"error":"no active workflow"}'; return 1; }
+        die "No active workflow. Run ${BOLD}crossagent new <name>${NC}"
+    fi
+
+    local d phase repo desc created add_dirs pn phase_label
+    local plan_agent review_agent implement_agent verify_agent
+    d=$(wf_dir "$name")
+    if [[ ! -d "$d" ]]; then
+        $json_mode && { echo '{"error":"workflow dir missing"}'; return 1; }
+        die "Workflow dir missing: $d"
+    fi
+    phase=$(get_phase "$d")
+    repo=$(get_conf "$d" "repo")
+    desc=$(get_description "$d")
+    created=$(get_conf "$d" "created")
+    add_dirs=$(get_conf "$d" "add_dirs")
+    pn=$(phase_num "$phase")
+    plan_agent=$(get_phase_agent "$d" plan)
+    review_agent=$(get_phase_agent "$d" review)
+    implement_agent=$(get_phase_agent "$d" implement)
+    verify_agent=$(get_phase_agent "$d" verify)
+
+    local retry_count max_retries
+    retry_count=$(get_conf "$d" "retry_count"); retry_count=${retry_count:-0}
+    max_retries=$(get_conf "$d" "max_retries"); max_retries=${max_retries:-3}
+
+    if [[ "$phase" == "done" ]]; then
+        phase_label="done"
+    else
+        phase_label=$(echo "${PHASE_LABELS[$phase]}" | tr '[:upper:]' '[:lower:]')
+    fi
+
+    if $json_mode; then
+        local complete=false
+        [[ "$phase" == "done" ]] && complete=true
+        cat <<EJSON
+{
+  "name": "$(json_escape "$name")",
+  "phase": "$(json_escape "$phase")",
+  "phase_label": "${phase_label}",
+  "complete": ${complete},
+  "repo": "$(json_escape "$repo")",
+  "add_dirs": $(_json_csv_to_array "$add_dirs"),
+  "repos": {"primary":"$(json_escape "$repo")","additional":$(_json_csv_to_array "$add_dirs")},
+  "description": "$(json_escape "$desc")",
+  "created": "$(json_escape "$created")",
+  "workflow_dir": "$(json_escape "$d")",
+  "agents": {
+    "plan": {"name":"$(json_escape "$plan_agent")","display_name":"$(json_escape "$(get_agent_prop "$plan_agent" "display_name")")"},
+    "review": {"name":"$(json_escape "$review_agent")","display_name":"$(json_escape "$(get_agent_prop "$review_agent" "display_name")")"},
+    "implement": {"name":"$(json_escape "$implement_agent")","display_name":"$(json_escape "$(get_agent_prop "$implement_agent" "display_name")")"},
+    "verify": {"name":"$(json_escape "$verify_agent")","display_name":"$(json_escape "$(get_agent_prop "$verify_agent" "display_name")")"}
+  },
+  "retry_count": ${retry_count},
+  "max_retries": ${max_retries},
+  "artifacts": {
+    "plan": $(_json_artifact "$d/plan.md"),
+    "review": $(_json_artifact "$d/review.md"),
+    "implement": $(_json_artifact "$d/implement.md"),
+    "verify": $(_json_artifact "$d/verify.md"),
+    "memory": $(_json_artifact "$d/memory.md")
+  }
+}
+EJSON
+        return 0
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Workflow: ${name}${NC}"
+    separator
+    echo -e "  ${DIM}Created:${NC}     ${created}"
+    echo -e "  ${DIM}Repository:${NC}  ${repo}"
+    [[ -n "$add_dirs" ]] && echo -e "  ${DIM}Extra dirs:${NC}  ${add_dirs}"
+    echo -e "  ${DIM}Agents:${NC}      plan=${plan_agent}, review=${review_agent}, implement=${implement_agent}, verify=${verify_agent}"
+    echo -e "  ${DIM}Description:${NC}"
+    echo "$desc" | sed 's/^/    /'
+    echo ""
+
+    local i label icon extra
+    for i in 1 2 3 4; do
+        label="${PHASE_LABELS[$i]}"
+        extra=""
+
+        if [[ "$pn" -gt "$i" ]]; then
+            icon="${GREEN}✓${NC}"
+        elif [[ "$pn" -eq "$i" ]]; then
+            icon="${YELLOW}→${NC}"
+        else
+            icon="${DIM}○${NC}"
+        fi
+
+        case $i in
+            1) [[ -f "$d/plan.md" ]]   && extra=" ${DIM}($(wc -l < "$d/plan.md" | tr -d ' ') lines)${NC}" ;;
+            2) [[ -f "$d/review.md" ]]  && extra=" ${DIM}($(wc -l < "$d/review.md" | tr -d ' ') lines)${NC}" ;;
+            4) [[ -f "$d/verify.md" ]]  && extra=" ${DIM}($(wc -l < "$d/verify.md" | tr -d ' ') lines)${NC}" ;;
+        esac
+
+        printf "  %b Phase %d: %-12s%b\n" "$icon" "$i" "$label" "$extra"
+    done
+    echo ""
+
+    if [[ "$phase" == "done" ]]; then
+        echo -e "  ${GREEN}${BOLD}Workflow complete${NC}"
+    else
+        local cmds=( '' 'plan' 'review' 'implement' 'verify' )
+        echo -e "  Next: ${BOLD}crossagent ${cmds[$phase]}${NC}"
+    fi
+    echo ""
+}
+
+cmd_list() {
+    local json_mode=false
+    [[ "${1:-}" == "--json" ]] && json_mode=true
+
+    ensure_dirs
+    local current
+    current=$(get_current)
+
+    if $json_mode; then
+        local items="" first=true
+        for dir in "$WORKFLOWS_DIR"/*/; do
+            [[ -d "$dir" ]] || continue
+            local wname wphase wlabel active_flag
+            wname=$(basename "$dir")
+            wphase=$(get_phase "$dir")
+            if [[ "$wphase" == "done" ]]; then
+                wlabel="done"
+            else
+                wlabel=$(echo "${PHASE_LABELS[$wphase]}" | tr '[:upper:]' '[:lower:]')
+            fi
+            active_flag=false
+            [[ "$wname" == "$current" ]] && active_flag=true
+            $first || items+=","
+            items+="{\"name\":\"$(json_escape "$wname")\",\"phase\":\"$wphase\",\"phase_label\":\"$wlabel\",\"active\":$active_flag,\"agents\":{\"plan\":\"$(json_escape "$(get_phase_agent "$dir" plan)")\",\"review\":\"$(json_escape "$(get_phase_agent "$dir" review)")\",\"implement\":\"$(json_escape "$(get_phase_agent "$dir" implement)")\",\"verify\":\"$(json_escape "$(get_phase_agent "$dir" verify)")\"}}"
+            first=false
+        done
+        echo "{\"workflows\":[${items}],\"active\":\"$(json_escape "$current")\"}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Workflows${NC}"
+    separator
+
+    local count=0
+    for dir in "$WORKFLOWS_DIR"/*/; do
+        [[ -d "$dir" ]] || continue
+        local wname wphase indicator=""
+        wname=$(basename "$dir")
+        wphase=$(get_phase "$dir")
+        [[ "$wname" == "$current" ]] && indicator=" ${CYAN}(active)${NC}"
+
+        local phase_display
+        if [[ "$wphase" == "done" ]]; then
+            phase_display="${GREEN}complete${NC}"
+        else
+            phase_display="phase ${wphase} — $(echo "${PHASE_LABELS[$wphase]}" | tr '[:upper:]' '[:lower:]')"
+        fi
+
+        echo -e "  ${BOLD}${wname}${NC} — ${phase_display}${indicator}"
+        echo -e "    ${DIM}agents:${NC} plan=$(get_phase_agent "$dir" plan), review=$(get_phase_agent "$dir" review), implement=$(get_phase_agent "$dir" implement), verify=$(get_phase_agent "$dir" verify)"
+        ((count++)) || true
+    done
+
+    [[ $count -eq 0 ]] && echo -e "  ${DIM}No workflows yet.${NC}"
+    echo ""
+}
+
+cmd_agents() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            local json_mode=false
+            [[ "${1:-}" == "--json" ]] && json_mode=true
+            ensure_dirs
+
+            if $json_mode; then
+                local items="" first=true
+                local builtin
+                for builtin in claude codex; do
+                    $first || items+=","
+                    items+="{\"name\":\"$builtin\",\"display_name\":\"$(json_escape "$(get_agent_prop "$builtin" "display_name")")\",\"adapter\":\"$(get_agent_prop "$builtin" "adapter")\",\"command\":\"$(get_agent_prop "$builtin" "command")\",\"builtin\":true}"
+                    first=false
+                done
+
+                local file name adapter command display
+                for file in "$AGENTS_DIR"/*; do
+                    [[ -f "$file" ]] || continue
+                    name=$(basename "$file")
+                    adapter=$(get_agent_prop "$name" "adapter")
+                    command=$(get_agent_prop "$name" "command")
+                    display=$(get_agent_prop "$name" "display_name")
+                    $first || items+=","
+                    items+="{\"name\":\"$(json_escape "$name")\",\"display_name\":\"$(json_escape "$display")\",\"adapter\":\"$(json_escape "$adapter")\",\"command\":\"$(json_escape "$command")\",\"builtin\":false}"
+                    first=false
+                done
+
+                echo "{\"agents\":[${items}]}"
+                return 0
+            fi
+
+            echo ""
+            echo -e "  ${BOLD}Agents${NC}"
+            separator
+            echo -e "  ${BOLD}claude${NC} — $(get_agent_prop claude display_name) ${DIM}[builtin | adapter=claude | command=claude]${NC}"
+            echo -e "  ${BOLD}codex${NC} — $(get_agent_prop codex display_name) ${DIM}[builtin | adapter=codex | command=codex]${NC}"
+            local file name adapter command display
+            for file in "$AGENTS_DIR"/*; do
+                [[ -f "$file" ]] || continue
+                name=$(basename "$file")
+                adapter=$(get_agent_prop "$name" "adapter")
+                command=$(get_agent_prop "$name" "command")
+                display=$(get_agent_prop "$name" "display_name")
+                echo -e "  ${BOLD}${name}${NC} — ${display} ${DIM}[custom | adapter=${adapter} | command=${command}]${NC}"
+            done
+            echo ""
+            ;;
+
+        add)
+            ensure_dirs
+            local name="${1:-}" adapter="" command="" display=""
+            [[ -n "$name" ]] || die "Usage: crossagent agents add <name> --adapter <claude|codex> [--command <cmd>] [--display-name <name>]"
+            shift
+            name=$(sanitize_agent_name "$name")
+            [[ -n "$name" ]] || die "Invalid agent name."
+            agent_is_builtin "$name" && die "Cannot overwrite builtin agent '${name}'."
+            [[ ! -f "$(agent_file "$name")" ]] || die "Agent already exists: ${name}"
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --adapter) require_option_arg "$1" "${2:-}"; adapter="$2"; shift 2 ;;
+                    --command) require_option_arg "$1" "${2:-}"; command="$2"; shift 2 ;;
+                    --display-name) require_option_arg "$1" "${2:-}"; display="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *) die "Unexpected argument: $1" ;;
+                esac
+            done
+
+            [[ "$adapter" == "claude" || "$adapter" == "codex" ]] || die "Agent adapter must be one of: claude, codex"
+            command="${command:-$adapter}"
+            display="${display:-$name}"
+
+            cat > "$(agent_file "$name")" <<EOF
+adapter=${adapter}
+command=${command}
+display_name=${display}
+EOF
+            success "Agent '${name}' added."
+            ;;
+
+        remove|rm|delete)
+            ensure_dirs
+            local name="${1:-}"
+            [[ -n "$name" ]] || die "Usage: crossagent agents remove <name>"
+            agent_is_builtin "$name" && die "Cannot remove builtin agent '${name}'."
+            local file
+            file=$(agent_file "$name")
+            [[ -f "$file" ]] || die "Agent not found: ${name}"
+
+            local dir key
+            for dir in "$WORKFLOWS_DIR"/*; do
+                [[ -d "$dir" ]] || continue
+                for key in plan review implement verify; do
+                    [[ "$(get_phase_agent "$dir" "$key")" == "$name" ]] && die "Agent '${name}' is assigned to workflow '$(basename "$dir")' phase '${key}'. Reassign it first."
+                done
+            done
+
+            rm -f "$file"
+            success "Agent '${name}' removed."
+            ;;
+
+        show|assignments)
+            local json_mode=false workflow=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode=true; shift ;;
+                    --workflow) require_option_arg "$1" "${2:-}"; workflow="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *) die "Unexpected argument: $1" ;;
+                esac
+            done
+            [[ -n "$workflow" ]] || workflow=$(require_workflow)
+            local d="$WORKFLOWS_DIR/$workflow"
+            [[ -d "$d" ]] || die "Workflow '${workflow}' not found."
+            local plan_agent review_agent implement_agent verify_agent
+            plan_agent=$(get_phase_agent "$d" plan)
+            review_agent=$(get_phase_agent "$d" review)
+            implement_agent=$(get_phase_agent "$d" implement)
+            verify_agent=$(get_phase_agent "$d" verify)
+
+            if $json_mode; then
+                cat <<EJSON
+{"workflow":"$(json_escape "$workflow")","agents":{"plan":"$(json_escape "$plan_agent")","review":"$(json_escape "$review_agent")","implement":"$(json_escape "$implement_agent")","verify":"$(json_escape "$verify_agent")"}}
+EJSON
+                return 0
+            fi
+
+            echo ""
+            echo -e "  ${BOLD}Workflow Agents: ${workflow}${NC}"
+            separator
+            echo -e "  plan:      ${plan_agent} ${DIM}($(get_agent_prop "$plan_agent" "display_name"))${NC}"
+            echo -e "  review:    ${review_agent} ${DIM}($(get_agent_prop "$review_agent" "display_name"))${NC}"
+            echo -e "  implement: ${implement_agent} ${DIM}($(get_agent_prop "$implement_agent" "display_name"))${NC}"
+            echo -e "  verify:    ${verify_agent} ${DIM}($(get_agent_prop "$verify_agent" "display_name"))${NC}"
+            echo ""
+            ;;
+
+        assign)
+            local phase="${1:-}" agent="${2:-}" workflow=""
+            [[ -n "$phase" && -n "$agent" ]] || die "Usage: crossagent agents assign <plan|review|implement|verify> <agent> [--workflow <name>]"
+            shift 2
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --workflow) require_option_arg "$1" "${2:-}"; workflow="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *) die "Unexpected argument: $1" ;;
+                esac
+            done
+
+            phase=$(phase_key "$phase") || die "Unknown phase: ${phase}"
+            [[ -n "$workflow" ]] || workflow=$(require_workflow)
+            local d="$WORKFLOWS_DIR/$workflow"
+            [[ -d "$d" ]] || die "Workflow '${workflow}' not found."
+            set_phase_agent "$d" "$phase" "$agent"
+            success "Assigned agent '${agent}' to ${phase} for workflow '${workflow}'."
+            ;;
+
+        reset)
+            local phase="${1:-}" workflow=""
+            [[ -n "$phase" ]] || die "Usage: crossagent agents reset <plan|review|implement|verify> [--workflow <name>]"
+            shift
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --workflow) require_option_arg "$1" "${2:-}"; workflow="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *) die "Unexpected argument: $1" ;;
+                esac
+            done
+
+            phase=$(phase_key "$phase") || die "Unknown phase: ${phase}"
+            [[ -n "$workflow" ]] || workflow=$(require_workflow)
+            local d="$WORKFLOWS_DIR/$workflow"
+            [[ -d "$d" ]] || die "Workflow '${workflow}' not found."
+            reset_phase_agent "$d" "$phase"
+            success "Reset ${phase} agent for workflow '${workflow}' to default ($(default_phase_agent "$phase"))."
+            ;;
+
+        help|--help|-h)
+            cat <<'USAGE'
+Usage:
+  crossagent agents list [--json]
+  crossagent agents add <name> --adapter <claude|codex> [--command <cmd>] [--display-name <name>]
+  crossagent agents remove <name>
+  crossagent agents show [--workflow <name>] [--json]
+  crossagent agents assign <plan|review|implement|verify> <agent> [--workflow <name>]
+  crossagent agents reset <plan|review|implement|verify> [--workflow <name>]
+USAGE
+            ;;
+
+        *)
+            die "Unknown agents command: ${subcmd}. Run 'crossagent agents help'."
+            ;;
+    esac
+}
+
+cmd_repos() {
+    local subcmd="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcmd" in
+        list)
+            local json_mode=false workflow=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode=true; shift ;;
+                    --workflow) require_option_arg "$1" "${2:-}"; workflow="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *) die "Unexpected argument: $1" ;;
+                esac
+            done
+
+            [[ -n "$workflow" ]] || workflow=$(require_workflow)
+            local d="$WORKFLOWS_DIR/$workflow"
+            [[ -d "$d" ]] || die "Workflow '${workflow}' not found."
+
+            local repo add_dirs
+            repo=$(get_conf "$d" "repo")
+            add_dirs=$(get_conf "$d" "add_dirs")
+
+            if $json_mode; then
+                cat <<EJSON
+{"primary":"$(json_escape "$repo")","additional":$(_json_csv_to_array "$add_dirs")}
+EJSON
+                return 0
+            fi
+
+            echo ""
+            echo -e "  ${BOLD}Repositories: ${workflow}${NC}"
+            separator
+            echo -e "  ${GREEN}*${NC} ${repo} ${DIM}(primary)${NC}"
+            if [[ -n "$add_dirs" ]]; then
+                local _dirs _dir
+                IFS=',' read -ra _dirs <<< "$add_dirs"
+                for _dir in "${_dirs[@]}"; do
+                    [[ -n "$_dir" ]] && echo -e "    ${_dir}"
+                done
+            fi
+            echo ""
+            ;;
+
+        add)
+            local path="" workflow=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --workflow) require_option_arg "$1" "${2:-}"; workflow="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *)  path="$1"; shift ;;
+                esac
+            done
+
+            [[ -n "$path" ]] || die "Usage: crossagent repos add <path> [--workflow <name>]"
+            path=$(resolve_dir "Repository" "$path")
+
+            [[ -n "$workflow" ]] || workflow=$(require_workflow)
+            local d="$WORKFLOWS_DIR/$workflow"
+            [[ -d "$d" ]] || die "Workflow '${workflow}' not found."
+
+            local repo add_dirs
+            repo=$(get_conf "$d" "repo")
+            add_dirs=$(get_conf "$d" "add_dirs")
+
+            # Check if it's already the primary repo
+            [[ "$path" == "$repo" ]] && die "Path is already the primary repository."
+
+            # Check for duplicate in add_dirs
+            if _add_dirs_contains "$add_dirs" "$path"; then
+                die "Path is already in the repository list: ${path}"
+            fi
+
+            add_dirs=$(_add_dirs_append "$add_dirs" "$path")
+            set_conf "$d" "add_dirs" "$add_dirs"
+            success "Added repository: ${path}"
+            ;;
+
+        remove|rm)
+            local path="" workflow=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --workflow) require_option_arg "$1" "${2:-}"; workflow="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *)  path="$1"; shift ;;
+                esac
+            done
+
+            [[ -n "$path" ]] || die "Usage: crossagent repos remove <path> [--workflow <name>]"
+            # Resolve if the path exists, otherwise try matching raw
+            if [[ -d "$path" ]]; then
+                path=$(cd "$path" && pwd)
+            fi
+
+            [[ -n "$workflow" ]] || workflow=$(require_workflow)
+            local d="$WORKFLOWS_DIR/$workflow"
+            [[ -d "$d" ]] || die "Workflow '${workflow}' not found."
+
+            local repo add_dirs
+            repo=$(get_conf "$d" "repo")
+            add_dirs=$(get_conf "$d" "add_dirs")
+
+            # Cannot remove primary repo
+            [[ "$path" == "$repo" ]] && die "Cannot remove the primary repository. Use ${BOLD}crossagent repos set-primary${NC} to change it."
+
+            # Check it exists in add_dirs
+            if ! _add_dirs_contains "$add_dirs" "$path"; then
+                die "Path not found in repository list: ${path}"
+            fi
+
+            add_dirs=$(_add_dirs_remove "$add_dirs" "$path")
+            set_conf "$d" "add_dirs" "$add_dirs"
+            success "Removed repository: ${path}"
+            ;;
+
+        set-primary)
+            local path="" workflow=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --workflow) require_option_arg "$1" "${2:-}"; workflow="$2"; shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *)  path="$1"; shift ;;
+                esac
+            done
+
+            [[ -n "$path" ]] || die "Usage: crossagent repos set-primary <path> [--workflow <name>]"
+            path=$(resolve_dir "Repository" "$path")
+
+            [[ -n "$workflow" ]] || workflow=$(require_workflow)
+            local d="$WORKFLOWS_DIR/$workflow"
+            [[ -d "$d" ]] || die "Workflow '${workflow}' not found."
+
+            local repo add_dirs
+            repo=$(get_conf "$d" "repo")
+            add_dirs=$(get_conf "$d" "add_dirs")
+
+            # Idempotent: if already primary, nothing to do
+            if [[ "$path" == "$repo" ]]; then
+                info "Path is already the primary repository."
+                return 0
+            fi
+
+            # Remove new primary from add_dirs if it was there
+            add_dirs=$(_add_dirs_remove "$add_dirs" "$path")
+
+            # Move old primary into add_dirs
+            if [[ -n "$repo" ]]; then
+                if ! _add_dirs_contains "$add_dirs" "$repo"; then
+                    add_dirs=$(_add_dirs_append "$add_dirs" "$repo")
+                fi
+            fi
+
+            set_conf "$d" "repo" "$path"
+            set_conf "$d" "add_dirs" "$add_dirs"
+            success "Primary repository changed to: ${path}"
+            [[ -n "$repo" ]] && info "Previous primary moved to additional: ${repo}"
+            ;;
+
+        help|--help|-h)
+            cat <<'USAGE'
+Usage:
+  crossagent repos list [--json] [--workflow <name>]
+  crossagent repos add <path> [--workflow <name>]
+  crossagent repos remove <path> [--workflow <name>]
+  crossagent repos set-primary <path> [--workflow <name>]
+USAGE
+            ;;
+
+        *)
+            die "Unknown repos command: ${subcmd}. Run 'crossagent repos help'."
+            ;;
+    esac
+}
+
+cmd_phase_cmd() {
+    local phase_arg="" json_mode=false force=false impl_phase=1
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)   json_mode=true; shift ;;
+            --force)  force=true; shift ;;
+            --phase)
+                require_option_arg "$1" "${2:-}"
+                impl_phase="$2"
+                shift 2
+                ;;
+            -*)       die "Unknown option: $1" ;;
+            *)        phase_arg="$1"; shift ;;
+        esac
+    done
+
+    [[ -z "$phase_arg" ]] && die "Usage: crossagent phase-cmd <plan|review|implement|verify> [--json] [--phase N]"
+    [[ "$impl_phase" =~ ^[1-9][0-9]*$ ]] || die "Implementation phase must be a positive integer."
+
+    local name d phase pn
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+    pn=$(phase_num "$phase")
+
+    local repo add_dirs
+    repo=$(get_conf "$d" "repo"); add_dirs=$(get_conf "$d" "add_dirs")
+
+    local tool prompt_file output_file target_phase agent agent_display adapter
+
+    case "$phase_arg" in
+        plan)
+            target_phase=1
+            [[ "$pn" -gt 1 && "$force" == false ]] && die "Plan phase already completed. Use --force to re-run."
+            prompt_file=$(gen_plan_prompt "$d")
+            output_file="$d/plan.md"
+            ;;
+        review)
+            target_phase=2
+            [[ "$pn" -lt 2 ]] && die "Complete Phase 1 first. Run: ${BOLD}crossagent plan${NC}"
+            [[ "$pn" -gt 2 && "$force" == false ]] && die "Review phase already completed. Use --force to re-run."
+            [[ ! -f "$d/plan.md" ]] && die "Plan file missing: $d/plan.md"
+            prompt_file=$(gen_review_prompt "$d")
+            output_file="$d/review.md"
+            ;;
+        implement|impl)
+            target_phase=3
+            [[ "$pn" -lt 3 ]] && die "Complete Phase 2 first. Run: ${BOLD}crossagent review${NC}"
+            [[ "$pn" -gt 4 && "$force" == false ]] && die "Workflow is complete. Use --force to re-run implementation."
+            prompt_file=$(gen_implement_prompt "$d" "$impl_phase")
+            output_file="$d/implement.md"
+            ;;
+        verify)
+            target_phase=4
+            [[ "$pn" -lt 4 ]] && die "Complete Phase 3 first. Run: ${BOLD}crossagent implement${NC}"
+            [[ "$pn" -gt 4 && "$force" == false ]] && die "Workflow is complete. Use --force to re-run verification."
+            prompt_file=$(gen_verify_prompt "$d")
+            output_file="$d/verify.md"
+            ;;
+        *)
+            die "Unknown phase: $phase_arg. Use: plan, review, implement, verify"
+            ;;
+    esac
+
+    agent=$(get_phase_agent "$d" "$target_phase")
+    agent_display=$(get_agent_prop "$agent" "display_name")
+    adapter=$(get_agent_prop "$agent" "adapter")
+    tool=$(get_agent_prop "$agent" "command")
+
+    # Build the prompt text.
+    # Claude reads files natively, so we point it to the prompt file.
+    # Codex needs the full prompt content inline (including general instructions)
+    # since it may not automatically read files referenced by path.
+    local prompt
+    if [[ "$adapter" == "codex" ]]; then
+        local general_file="$d/prompts/general.md"
+        if [[ -f "$general_file" ]]; then
+            prompt="$(cat "$general_file")
+
+---
+
+$(cat "$prompt_file")"
+        else
+            prompt=$(cat "$prompt_file")
+        fi
+    else
+        prompt="Read and follow the instructions at ${prompt_file}"
+    fi
+
+    # Build spawn args — include sandbox/auto-accept flags per adapter
+    _build_launch_args "$d" "$add_dirs"
+    local spawn_args=()
+    if [[ "$adapter" == "claude" ]]; then
+        local settings_file
+        settings_file=$(_gen_sandbox_settings "$d" "$repo" "$add_dirs")
+        spawn_args+=(--permission-mode auto --settings "$settings_file")
+    elif [[ "$adapter" == "codex" ]]; then
+        spawn_args+=(--full-auto -C "$repo")
+    fi
+    spawn_args+=("${LAUNCH_ARGS[@]}")
+    # Use -- to separate options from positional prompt arg.
+    # Without this, variadic --add-dir <directories...> swallows the prompt.
+    spawn_args+=("--")
+    spawn_args+=("$prompt")
+
+    if $json_mode; then
+        local args_json="["
+        local first=true
+        for arg in "${spawn_args[@]}"; do
+            $first || args_json+=","
+            args_json+="\"$(json_escape "$arg")\""
+            first=false
+        done
+        args_json+="]"
+
+        local out_json="null"
+        [[ -n "${output_file:-}" ]] && out_json="\"$(json_escape "$output_file")\""
+
+        cat <<EJSON
+{
+  "agent": {"name":"$(json_escape "$agent")","display_name":"$(json_escape "$agent_display")","adapter":"$(json_escape "$adapter")"},
+  "command": "$(json_escape "$tool")",
+  "args": ${args_json},
+  "cwd": "$(json_escape "$repo")",
+  "prompt": "$(json_escape "$prompt")",
+  "prompt_file": "$(json_escape "$prompt_file")",
+  "output_file": ${out_json},
+  "phase": ${target_phase},
+  "phase_label": "$(echo "${PHASE_LABELS[$target_phase]}" | tr '[:upper:]' '[:lower:]')",
+  "workflow": "$(json_escape "$name")",
+  "workflow_dir": "$(json_escape "$d")"
+}
+EJSON
+    else
+        echo "agent: $agent ($agent_display)"
+        echo "tool: $tool"
+        echo "cwd: $repo"
+        echo "prompt: $prompt"
+        echo "prompt_file: $prompt_file"
+        [[ -n "${output_file:-}" ]] && echo "output_file: $output_file"
+        echo "phase: $target_phase (${PHASE_LABELS[$target_phase]})"
+        echo "args: ${spawn_args[*]}"
+    fi
+}
+
+cmd_use() {
+    local target="${1:-}"
+    [[ -z "$target" ]] && die "Usage: crossagent use <name>"
+    [[ ! -d "$WORKFLOWS_DIR/$target" ]] && die "Workflow '${target}' not found. Run ${BOLD}crossagent list${NC}"
+    set_current "$target"
+    success "Switched to: ${target}"
+}
+
+cmd_next() {
+    local name d phase
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+
+    case "$phase" in
+        1)    cmd_plan "$@" ;;
+        2)    cmd_review "$@" ;;
+        3)    cmd_implement "$@" ;;
+        4)    cmd_verify "$@" ;;
+        done) success "Workflow '${name}' is already complete." ;;
+        *)    die "Unknown phase: $phase" ;;
+    esac
+}
+
+cmd_advance() {
+    local name d phase
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+
+    [[ "$phase" == "done" ]] && { warn "Workflow already complete."; return 0; }
+
+    local next=$((phase + 1))
+    if [[ $next -gt 4 ]]; then
+        set_phase "$d" "done"
+        success "Workflow marked complete."
+    else
+        set_phase "$d" "$next"
+        success "Advanced to phase ${next} — ${PHASE_LABELS[$next]}"
+    fi
+}
+
+cmd_done() {
+    local name d
+    name=$(require_workflow); d=$(wf_dir "$name")
+    set_phase "$d" "done"
+    success "Workflow '${name}' marked complete."
+}
+
+cmd_revert() {
+    local target="" reason="" json_mode=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)     json_mode=true; shift ;;
+            --reason)   require_option_arg "$1" "${2:-}"; reason="$2"; shift 2 ;;
+            -*)         die "Unknown option: $1" ;;
+            *)          target="$1"; shift ;;
+        esac
+    done
+
+    [[ -z "$target" ]] && die "Usage: crossagent revert <target_phase> [--reason <text>]"
+    [[ "$target" =~ ^[1-4]$ ]] || die "Target phase must be 1-4."
+
+    local name d phase pn
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+    pn=$(phase_num "$phase")
+
+    [[ "$pn" -le "$target" ]] && die "Cannot revert: current phase ($phase) is not ahead of target ($target)."
+
+    # Get retry count and enforce max
+    local retry_count max_retries
+    retry_count=$(get_conf "$d" "retry_count")
+    retry_count=${retry_count:-0}
+    max_retries=$(get_conf "$d" "max_retries")
+    max_retries=${max_retries:-3}
+
+    if [[ "$retry_count" -ge "$max_retries" ]]; then
+        if $json_mode; then
+            echo "{\"action\":\"needs_human\",\"reason\":\"Retry limit reached (${retry_count}/${max_retries})\",\"retry_count\":${retry_count},\"max_retries\":${max_retries}}"
+            return 0
+        fi
+        die "Retry limit reached (${retry_count}/${max_retries}). Resolve issues manually."
+    fi
+
+    retry_count=$((retry_count + 1))
+    local attempt="$retry_count"
+
+    # Archive artifacts from target phase through current phase
+    local phase_keys=( '' 'plan' 'review' 'implement' 'verify' )
+    local i
+    for (( i=target; i<=4; i++ )); do
+        local key="${phase_keys[$i]}"
+        local artifact="$d/${key}.md"
+        if [[ -f "$artifact" ]]; then
+            mv "$artifact" "$d/${key}.attempt-${attempt}.md"
+        fi
+    done
+
+    # Determine the source artifact that triggered the revert.
+    # verify.md triggers revert to implement; review.md triggers revert to plan.
+    local source_artifact=""
+    local source_label=""
+    if [[ -f "$d/verify.attempt-${attempt}.md" ]]; then
+        source_artifact="$d/verify.attempt-${attempt}.md"
+        source_label="verification report"
+    elif [[ -f "$d/verify.md" ]]; then
+        source_artifact="$d/verify.md"
+        source_label="verification report"
+    elif [[ -f "$d/review.attempt-${attempt}.md" ]]; then
+        source_artifact="$d/review.attempt-${attempt}.md"
+        source_label="review feedback"
+    elif [[ -f "$d/review.md" ]]; then
+        source_artifact="$d/review.md"
+        source_label="review feedback"
+    fi
+
+    # Extract the specific issues/feedback from the source artifact
+    local extracted_issues=""
+    if [[ -n "$source_artifact" && -f "$source_artifact" ]]; then
+        extracted_issues=$(cat "$source_artifact")
+    fi
+
+    # Write revert context with the actual issues inlined
+    mkdir -p "$d/prompts"
+    local ctx="$d/prompts/revert-context.md"
+    cat > "$ctx" <<RCTX
+# Revert Context (Attempt ${attempt})
+
+## Why This Phase Is Being Re-run
+${reason:-The previous attempt did not pass review/verification.}
+
+## IMPORTANT: Surgical Fix Required
+This is a **targeted retry**, NOT a full redo. You must:
+1. Read the specific issues listed below
+2. Make **only** the changes needed to address those issues
+3. Do NOT rewrite or redo work that was already correct
+4. Preserve all existing work that is not related to the issues
+RCTX
+
+    # Inline the full source artifact content
+    if [[ -n "$extracted_issues" ]]; then
+        cat >> "$ctx" <<RCTX
+
+## Issues to Address (from ${source_label})
+The following is the complete ${source_label} from the previous attempt.
+Focus on sections marked as issues, failures, or requiring changes:
+
+---
+${extracted_issues}
+---
+RCTX
+    fi
+
+    # List archived files for reference
+    local has_archived=false
+    for (( i=target; i<=4; i++ )); do
+        local key="${phase_keys[$i]}"
+        local archived="$d/${key}.attempt-${attempt}.md"
+        if [[ -f "$archived" ]]; then
+            if ! $has_archived; then
+                printf '\n## Previous Attempt Artifacts\n' >> "$ctx"
+                has_archived=true
+            fi
+            echo "- \`${archived}\`" >> "$ctx"
+        fi
+    done
+
+    cat >> "$ctx" <<RCTX
+
+## Surgical Fix Guidelines
+- Identify each specific issue from the ${source_label} above
+- For each issue, make the minimum change required to resolve it
+- Do NOT refactor, restructure, or rewrite code that was not flagged
+- If the ${source_label} mentions specific files and line numbers, go directly to those locations
+- After fixing, verify your changes resolve each listed issue
+- Document what you fixed and how in your output file
+RCTX
+
+    # Update state
+    set_phase "$d" "$target"
+    set_conf "$d" "retry_count" "$retry_count"
+
+    if $json_mode; then
+        cat <<EJSON
+{
+  "action": "reverted",
+  "target_phase": ${target},
+  "target_label": "$(echo "${PHASE_LABELS[$target]}" | tr '[:upper:]' '[:lower:]')",
+  "attempt": ${attempt},
+  "retry_count": ${retry_count},
+  "max_retries": ${max_retries},
+  "revert_context": "$(json_escape "$ctx")"
+}
+EJSON
+    else
+        success "Reverted to phase ${target} — ${PHASE_LABELS[$target]} (attempt ${attempt}/${max_retries})"
+        info "Revert context written to: ${ctx}"
+    fi
+}
+
+cmd_supervise() {
+    local json_mode=false supervise_phase=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)  json_mode=true; shift ;;
+            --phase) require_option_arg "$1" "${2:-}"; supervise_phase="$2"; shift 2 ;;
+            *)       shift ;;
+        esac
+    done
+
+    local name d phase pn
+    name=$(require_workflow); d=$(wf_dir "$name"); phase=$(get_phase "$d")
+    pn=$(phase_num "$phase")
+
+    local retry_count max_retries
+    retry_count=$(get_conf "$d" "retry_count")
+    retry_count=${retry_count:-0}
+    max_retries=$(get_conf "$d" "max_retries")
+    max_retries=${max_retries:-3}
+
+    # Determine which phase to supervise: explicit --phase or auto-detect
+    if [[ -z "$supervise_phase" ]]; then
+        # Auto-detect: if verify.md exists, supervise verify; else if review.md, supervise review
+        if [[ -f "$d/verify.md" ]]; then
+            supervise_phase="verify"
+        elif [[ -f "$d/review.md" ]]; then
+            supervise_phase="review"
+        else
+            if $json_mode; then
+                echo '{"action":"waiting","reason":"No artifact to supervise"}'
+            else
+                info "No artifact to supervise."
+            fi
+            return 0
+        fi
+    fi
+
+    case "$supervise_phase" in
+        verify)
+            _supervise_verify "$d" "$json_mode" "$retry_count" "$max_retries"
+            ;;
+        review)
+            _supervise_review "$d" "$json_mode" "$retry_count" "$max_retries"
+            ;;
+        *)
+            if $json_mode; then
+                echo "{\"action\":\"pass\",\"reason\":\"No supervision needed for phase: ${supervise_phase}\"}"
+            else
+                info "No supervision defined for phase: ${supervise_phase}"
+            fi
+            ;;
+    esac
+}
+
+_supervise_verify() {
+    local d="$1" json_mode="$2" retry_count="$3" max_retries="$4"
+    local verify_file="$d/verify.md"
+
+    if [[ ! -f "$verify_file" ]]; then
+        if [[ "$json_mode" == true ]]; then
+            echo '{"action":"waiting","reason":"verify.md not found"}'
+        else
+            info "Verify artifact not found."
+        fi
+        return 0
+    fi
+
+    local verdict status rec
+    while IFS= read -r line; do
+        case "$line" in
+            verdict=*) verdict="${line#verdict=}" ;;
+            status=*) status="${line#status=}" ;;
+            recommendation=*) rec="${line#recommendation=}" ;;
+        esac
+    done < <(judge_verify "$verify_file")
+
+    case "$verdict" in
+        pass)
+            set_phase "$d" "done"
+            if [[ "$json_mode" == true ]]; then
+                echo "{\"action\":\"done\",\"verdict\":\"${verdict}\",\"status\":\"$(json_escape "$status")\",\"recommendation\":\"$(json_escape "$rec")\"}"
+            else
+                success "Verification passed — workflow complete!"
+            fi
+            ;;
+        fix)
+            local reason="Verifier recommendation: ${rec}. Status: ${status}. Surgically fix the issues flagged in verify.md — do NOT re-implement from scratch."
+            if [[ "$json_mode" == true ]]; then
+                cmd_revert 3 --reason "$reason" --json
+            else
+                warn "Verification found issues. Reverting to implement for surgical fix."
+                cmd_revert 3 --reason "$reason"
+            fi
+            ;;
+        rework)
+            local reason="Verifier recommendation: ${rec}. Status: ${status}. The approach needs fundamental rework — revise the plan addressing the verifier's concerns."
+            if [[ "$json_mode" == true ]]; then
+                cmd_revert 1 --reason "$reason" --json
+            else
+                warn "Verification requires rework. Reverting to plan."
+                cmd_revert 1 --reason "$reason"
+            fi
+            ;;
+        unknown|*)
+            if [[ "$json_mode" == true ]]; then
+                echo "{\"action\":\"unknown\",\"verdict\":\"${verdict}\",\"status\":\"$(json_escape "$status")\",\"recommendation\":\"$(json_escape "$rec")\",\"retry_count\":${retry_count},\"max_retries\":${max_retries}}"
+            else
+                warn "Could not determine verdict from verify.md."
+                info "Status: ${status}"
+                info "Recommendation: ${rec}"
+            fi
+            ;;
+    esac
+}
+
+_supervise_review() {
+    local d="$1" json_mode="$2" retry_count="$3" max_retries="$4"
+    local review_file="$d/review.md"
+
+    if [[ ! -f "$review_file" ]]; then
+        if [[ "$json_mode" == true ]]; then
+            echo '{"action":"waiting","reason":"review.md not found"}'
+        else
+            info "Review artifact not found."
+        fi
+        return 0
+    fi
+
+    local verdict review_verdict
+    while IFS= read -r line; do
+        case "$line" in
+            verdict=*) verdict="${line#verdict=}" ;;
+            review_verdict=*) review_verdict="${line#review_verdict=}" ;;
+        esac
+    done < <(judge_review "$review_file")
+
+    case "$verdict" in
+        approve)
+            # Review approved — proceed normally (no intervention)
+            if [[ "$json_mode" == true ]]; then
+                echo "{\"action\":\"pass\",\"verdict\":\"${verdict}\",\"review_verdict\":\"$(json_escape "$review_verdict")\"}"
+            else
+                success "Review approved the plan."
+            fi
+            ;;
+        approve_with_changes)
+            # Approved with changes — proceed but plan should incorporate feedback
+            # The implement prompt already references review.md, so this is fine
+            if [[ "$json_mode" == true ]]; then
+                echo "{\"action\":\"pass\",\"verdict\":\"${verdict}\",\"review_verdict\":\"$(json_escape "$review_verdict")\"}"
+            else
+                success "Review approved with changes. Implementation should address the feedback."
+            fi
+            ;;
+        rework)
+            local reason="Reviewer verdict: ${review_verdict}. The reviewer requests the plan be reworked. Surgically update the plan addressing the specific issues raised in review.md — do NOT rewrite the entire plan from scratch."
+            if [[ "$json_mode" == true ]]; then
+                cmd_revert 1 --reason "$reason" --json
+            else
+                warn "Review requests rework. Reverting to plan for surgical update."
+                cmd_revert 1 --reason "$reason"
+            fi
+            ;;
+        unknown|*)
+            if [[ "$json_mode" == true ]]; then
+                echo "{\"action\":\"unknown\",\"verdict\":\"${verdict}\",\"review_verdict\":\"$(json_escape "$review_verdict")\",\"retry_count\":${retry_count},\"max_retries\":${max_retries}}"
+            else
+                warn "Could not determine verdict from review.md."
+                info "Verdict: ${review_verdict}"
+            fi
+            ;;
+    esac
+}
+
+cmd_open() {
+    local name d
+    name=$(require_workflow); d=$(wf_dir "$name")
+    if command -v open >/dev/null 2>&1; then
+        open "$d"
+    elif command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$d"
+    else
+        die "No supported opener found. Install 'xdg-open' or open the directory manually: $d"
+    fi
+}
+
+cmd_memory() {
+    local subcmd="${1:-show}"
+    shift 2>/dev/null || true
+
+    local global_flag=false json_mode=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --global)  global_flag=true; shift ;;
+            --json)    json_mode=true; shift ;;
+            -h|--help) echo "Usage: crossagent memory [show|list] [--global] [--json]"; exit 0 ;;
+            *)         shift ;;
+        esac
+    done
+
+    ensure_dirs
+
+    case "$subcmd" in
+        show)
+            if $global_flag; then
+                if $json_mode; then
+                    local gc_content="" ll_content=""
+                    [[ -f "$MEMORY_DIR/global-context.md" ]] && gc_content=$(cat "$MEMORY_DIR/global-context.md")
+                    [[ -f "$MEMORY_DIR/lessons-learned.md" ]] && ll_content=$(cat "$MEMORY_DIR/lessons-learned.md")
+                    printf '{"type":"global","files":{"global-context.md":{"path":"%s","content":"%s"},"lessons-learned.md":{"path":"%s","content":"%s"}}}' \
+                        "$(json_escape "$MEMORY_DIR/global-context.md")" "$(json_escape "$gc_content")" \
+                        "$(json_escape "$MEMORY_DIR/lessons-learned.md")" "$(json_escape "$ll_content")"
+                    echo ""
+                else
+                    echo ""
+                    echo -e "  ${BOLD}Global Memory${NC}"
+                    separator
+                    for f in "$MEMORY_DIR"/*.md; do
+                        [[ -f "$f" ]] || continue
+                        echo ""
+                        echo -e "  ${BOLD}$(basename "$f")${NC}"
+                        echo -e "  ${DIM}${f}${NC}"
+                        echo ""
+                        sed 's/^/    /' "$f"
+                        echo ""
+                        separator
+                    done
+                    echo ""
+                fi
+            else
+                local name d
+                name=$(require_workflow); d=$(wf_dir "$name")
+                local mem_path="$d/memory.md"
+                if $json_mode; then
+                    if [[ -f "$mem_path" ]]; then
+                        local content
+                        content=$(cat "$mem_path")
+                        printf '{"type":"workflow","name":"%s","path":"%s","content":"%s"}' \
+                            "$(json_escape "$name")" "$(json_escape "$mem_path")" "$(json_escape "$content")"
+                    else
+                        printf '{"type":"workflow","name":"%s","path":"%s","content":null}' \
+                            "$(json_escape "$name")" "$(json_escape "$mem_path")"
+                    fi
+                    echo ""
+                else
+                    echo ""
+                    echo -e "  ${BOLD}Workflow Memory: ${name}${NC}"
+                    separator
+                    if [[ -f "$mem_path" ]]; then
+                        echo ""
+                        sed 's/^/    /' "$mem_path"
+                        echo ""
+                    else
+                        echo -e "  ${DIM}No memory file yet.${NC}"
+                    fi
+                    echo ""
+                fi
+            fi
+            ;;
+        list)
+            if $global_flag; then
+                if $json_mode; then
+                    local files="[" first=true
+                    for f in "$MEMORY_DIR"/*.md; do
+                        [[ -f "$f" ]] || continue
+                        $first || files+=","
+                        local lines
+                        lines=$(wc -l < "$f" | tr -d ' ')
+                        files+="$(printf '{"name":"%s","path":"%s","lines":%s}' "$(json_escape "$(basename "$f")")" "$(json_escape "$f")" "$lines")"
+                        first=false
+                    done
+                    files+="]"
+                    echo "{\"type\":\"global\",\"files\":${files}}"
+                else
+                    echo ""
+                    echo -e "  ${BOLD}Global Memory Files${NC}"
+                    separator
+                    for f in "$MEMORY_DIR"/*.md; do
+                        [[ -f "$f" ]] || { echo -e "  ${DIM}(none)${NC}"; break; }
+                        local lines
+                        lines=$(wc -l < "$f" | tr -d ' ')
+                        echo -e "  $(basename "$f")  ${DIM}(${lines} lines)${NC}"
+                    done
+                    echo ""
+                fi
+            else
+                local name d
+                name=$(require_workflow); d=$(wf_dir "$name")
+                if $json_mode; then
+                    local files="[" first=true
+                    if [[ -f "$d/memory.md" ]]; then
+                        local lines
+                        lines=$(wc -l < "$d/memory.md" | tr -d ' ')
+                        files+="$(printf '{"name":"memory.md","path":"%s","lines":%s}' "$(json_escape "$d/memory.md")" "$lines")"
+                        first=false
+                    fi
+                    files+="]"
+                    printf '{"type":"workflow","name":"%s","files":%s}' "$(json_escape "$name")" "$files"
+                    echo ""
+                else
+                    echo ""
+                    echo -e "  ${BOLD}Memory Files: ${name}${NC}"
+                    separator
+                    if [[ -f "$d/memory.md" ]]; then
+                        local lines
+                        lines=$(wc -l < "$d/memory.md" | tr -d ' ')
+                        echo -e "  memory.md  ${DIM}(${lines} lines)${NC}"
+                    else
+                        echo -e "  ${DIM}(none)${NC}"
+                    fi
+                    echo ""
+                fi
+            fi
+            ;;
+        edit)
+            if $global_flag; then
+                "${EDITOR:-vi}" "$MEMORY_DIR/global-context.md"
+            else
+                local name d
+                name=$(require_workflow); d=$(wf_dir "$name")
+                [[ -f "$d/memory.md" ]] || die "No memory file for workflow '${name}'."
+                "${EDITOR:-vi}" "$d/memory.md"
+            fi
+            ;;
+        *)
+            die "Unknown memory command: ${subcmd}. Use: show, list, edit"
+            ;;
+    esac
+}
+
+cmd_log() {
+    local name d
+    name=$(require_workflow); d=$(wf_dir "$name")
+
+    echo ""
+    echo -e "  ${BOLD}Artifacts: ${name}${NC}"
+    separator
+
+    local found=false
+    for artifact in plan.md review.md verify.md; do
+        local path="$d/$artifact"
+        if [[ -f "$path" ]]; then
+            found=true
+            echo ""
+            echo -e "  ${BOLD}${artifact}${NC}"
+            echo -e "  ${DIM}${path}${NC}"
+            echo ""
+            sed 's/^/    /' "$path"
+            echo ""
+            separator
+        fi
+    done
+
+    $found || echo -e "  ${DIM}No artifacts yet.${NC}"
+    echo ""
+}
+
+cmd_reset() {
+    local target="${1:-}"
+    [[ -z "$target" ]] && die "Usage: crossagent reset <name>"
+    local d="$WORKFLOWS_DIR/$target"
+    [[ ! -d "$d" ]] && die "Workflow '${target}' not found."
+
+    echo -ne "  Reset workflow '${target}'? All artifacts will be deleted. [y/N] "
+    read -r confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || { echo "  Cancelled."; return 0; }
+
+    rm -rf "$d"
+    local current
+    current=$(get_current)
+    [[ "$current" == "$target" ]] && rm -f "$CROSSAGENT_HOME/current"
+
+    success "Workflow '${target}' deleted."
+}
+
+# ── Usage ───────────────────────────────────────────────────────────────────
+
+usage() {
+    cat <<'USAGE'
+
+  crossagent — Cross-Model AI Agent Orchestrator v1.0.0
+
+  WORKFLOW COMMANDS
+    new <name> [opts]     Create a new workflow
+      --repo <path>         Target repository (default: cwd)
+      --add-dir <path>      Additional repo directories (repeatable)
+
+    plan [--force]        Phase 1: Plan with Claude Code
+    review [--force]      Phase 2: Review plan with Codex CLI
+    implement [opts]      Phase 3: Implement with Claude Code
+      --phase <n>           Implementation sub-phase (default: 1)
+    verify [--force]      Phase 4: Verify with Codex CLI
+
+  NAVIGATION
+    next                  Run the next pending phase
+    status                Show current workflow state
+    list                  List all workflows
+    use <name>            Switch active workflow
+    advance               Manually advance to next phase
+    done                  Mark workflow as complete
+
+  REPOSITORIES
+    repos list            List repositories for active workflow
+    repos add <path>      Add an additional repository
+    repos remove <path>   Remove an additional repository
+    repos set-primary     Change the primary repository (cwd)
+
+  AGENTS
+    agents list           List builtin and custom static agents
+    agents add            Register a custom static agent
+    agents remove         Remove a custom static agent
+    agents show           Show per-phase agent assignments
+    agents assign         Assign an agent to a workflow phase
+    agents reset          Reset a workflow phase to its default agent
+
+  INTEGRATION (for UI companion / scripting)
+    status --json         Machine-readable workflow state
+    list --json           Machine-readable workflow list
+    phase-cmd <phase>     Get launch parameters for a phase (does not spawn)
+      --json                JSON output (default: plain text)
+      --force               Allow launch config for already-completed phases
+      --phase <n>           Sub-phase for implement (default: 1)
+
+  MEMORY
+    memory show           Show workflow memory (default)
+    memory show --global  Show global memory files
+    memory list           List memory files for current workflow
+    memory list --global  List global memory files
+    memory edit           Edit workflow memory in $EDITOR
+    memory edit --global  Edit global context in $EDITOR
+      --json              JSON output for show/list
+
+  UTILITIES
+    log                   Display all artifacts (plan, review, report)
+    open                  Open workflow directory in Finder
+    reset <name>          Delete a workflow and its artifacts
+    help                  Show this help
+    version               Show version
+
+  WORKFLOW
+    ┌────────┐  plan.md  ┌────────┐  review.md  ┌────────┐  changes  ┌────────┐
+    │ 1.PLAN ├──────────►│2.REVIEW├────────────►│3.IMPL  ├─────────►│4.VERIFY│
+    │ Claude │           │ Codex  │             │ Claude │          │ Codex  │
+    └────────┘           └────────┘             └────────┘          └────────┘
+
+  EXAMPLES
+    crossagent new auth-refactor --repo ~/projects/api
+    crossagent new cache-layer --repo ~/proj/svc --add-dir ~/proj/shared
+    crossagent repos list
+    crossagent repos add ~/projects/shared-lib
+    crossagent repos set-primary ~/projects/api-v2
+    crossagent agents add reviewer-alt --adapter codex --command codex
+    crossagent agents assign review reviewer-alt
+    crossagent plan
+    crossagent review
+    crossagent implement --phase 1
+    crossagent implement --phase 2
+    crossagent verify
+
+USAGE
+}
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+main() {
+    local cmd="${1:-help}"
+    shift 2>/dev/null || true
+
+    case "$cmd" in
+        new)             cmd_new "$@" ;;
+        plan)            cmd_plan "$@" ;;
+        review)          cmd_review "$@" ;;
+        implement|impl)  cmd_implement "$@" ;;
+        verify)          cmd_verify "$@" ;;
+        status|st)       cmd_status "$@" ;;
+        list|ls)         cmd_list "$@" ;;
+        agents|agent)    cmd_agents "$@" ;;
+        repos)           cmd_repos "$@" ;;
+        phase-cmd)       cmd_phase_cmd "$@" ;;
+        use)             cmd_use "$@" ;;
+        next)            cmd_next "$@" ;;
+        advance)         cmd_advance "$@" ;;
+        revert)          cmd_revert "$@" ;;
+        supervise)       cmd_supervise "$@" ;;
+        done)            cmd_done "$@" ;;
+        open)            cmd_open "$@" ;;
+        memory|mem)      cmd_memory "$@" ;;
+        log)             cmd_log "$@" ;;
+        reset)           cmd_reset "$@" ;;
+        help|--help|-h)  usage ;;
+        version|--version|-v) echo "crossagent ${CROSSAGENT_VERSION}" ;;
+        *)               die "Unknown command: ${cmd}. Run 'crossagent help'." ;;
+    esac
+}
+
+main "$@"

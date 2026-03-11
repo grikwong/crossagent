@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crossagent</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1 class="logo">Crossagent</h1>
+        <span class="version">v1.0.0</span>
+      </div>
+      <div class="topbar-center">
+        <select id="workflow-select">
+          <option value="">No workflows</option>
+        </select>
+        <button id="new-btn" class="btn btn-sm" title="New Workflow">+</button>
+      </div>
+      <div class="topbar-right">
+        <span id="connection-status" class="status-dot" title="Disconnected"></span>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="content">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <!-- Phase Tracker -->
+        <div class="panel">
+          <div class="panel-header">Phases</div>
+          <div id="phase-tracker" class="phase-tracker">
+            <div class="phase-item" data-phase="1">
+              <span class="phase-icon"></span>
+              <span class="phase-label">1. Plan</span>
+              <span class="phase-tool">Claude</span>
+            </div>
+            <div class="phase-item" data-phase="2">
+              <span class="phase-icon"></span>
+              <span class="phase-label">2. Review</span>
+              <span class="phase-tool">Codex</span>
+            </div>
+            <div class="phase-item" data-phase="3">
+              <span class="phase-icon"></span>
+              <span class="phase-label">3. Implement</span>
+              <span class="phase-tool">Claude</span>
+            </div>
+            <div class="phase-item" data-phase="4">
+              <span class="phase-icon"></span>
+              <span class="phase-label">4. Verify</span>
+              <span class="phase-tool">Codex</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="panel">
+          <div class="panel-header">Actions</div>
+          <div class="actions">
+            <button id="run-phase-btn" class="btn btn-primary btn-block">Run Next Phase</button>
+            <div class="btn-row">
+              <button id="advance-btn" class="btn btn-sm btn-block" title="Manually advance to the next phase (use if auto-detection missed it)">Advance</button>
+              <button id="done-btn" class="btn btn-sm btn-block" title="Mark this workflow as complete">Done</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Artifacts -->
+        <div class="panel">
+          <div class="panel-header">Artifacts</div>
+          <div id="artifact-list" class="artifact-list">
+            <div class="artifact-item" data-artifact="plan">
+              <span class="artifact-icon">-</span> plan.md
+            </div>
+            <div class="artifact-item" data-artifact="review">
+              <span class="artifact-icon">-</span> review.md
+            </div>
+            <div class="artifact-item" data-artifact="implement">
+              <span class="artifact-icon">-</span> implement.md
+            </div>
+            <div class="artifact-item" data-artifact="verify">
+              <span class="artifact-icon">-</span> verify.md
+            </div>
+            <div class="artifact-item" data-artifact="memory">
+              <span class="artifact-icon">-</span> memory.md
+            </div>
+          </div>
+        </div>
+
+        <!-- Directories -->
+        <div class="panel">
+          <div class="panel-header">
+            <span>Directories</span>
+            <button id="add-dir-btn" class="btn-icon" title="Add directory">+</button>
+          </div>
+          <div id="dir-list" class="dir-list">
+            <p class="muted dir-empty">No active workflow</p>
+          </div>
+        </div>
+
+        <!-- Info -->
+        <div class="panel" id="info-panel">
+          <div class="panel-header">Info</div>
+          <div id="workflow-info" class="workflow-info">
+            <p class="muted">No active workflow</p>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Area -->
+      <main class="main-area">
+        <!-- Guide Banner -->
+        <div id="guide-banner" class="guide-banner">Create or select a workflow to get started.</div>
+
+        <!-- Terminal Panel -->
+        <div class="main-panel terminal-container" id="terminal-panel">
+          <div class="panel-header">
+            <span>Terminal</span>
+            <span id="terminal-status" class="terminal-status"></span>
+          </div>
+          <div id="terminal"></div>
+        </div>
+
+        <!-- Artifact Viewer -->
+        <div class="main-panel artifact-container" id="artifact-panel">
+          <div class="panel-header">
+            <span id="artifact-title">Artifact Viewer</span>
+          </div>
+          <div id="artifact-viewer" class="artifact-viewer">
+            <p class="muted centered">Select an artifact from the sidebar to view it</p>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- New Workflow Modal -->
+  <div id="new-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>New Workflow</h2>
+      <form id="new-form">
+        <label>Name
+          <input type="text" id="new-name" placeholder="feature-name" required>
+        </label>
+        <label>Repository Path
+          <input type="text" id="new-repo" placeholder="~/projects/my-app">
+        </label>
+        <label>Additional Directories
+          <textarea id="new-dirs" rows="2" placeholder="One path per line (optional)"></textarea>
+        </label>
+        <label>Description
+          <textarea id="new-desc" rows="4" placeholder="Describe the feature or task..." required></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="new-cancel" class="btn btn-sm">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add Directory Modal -->
+  <div id="adddir-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>Add Directory</h2>
+      <form id="adddir-form">
+        <label>Directory Path
+          <input type="text" id="adddir-path" placeholder="/path/to/directory" required>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="adddir-cancel" class="btn btn-sm">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm">Add</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.0/marked.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

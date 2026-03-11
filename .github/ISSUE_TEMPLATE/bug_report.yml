@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible defect in Crossagent
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: List the exact steps needed to reproduce the issue.
+      placeholder: |
+        1. Run `...`
+        2. Create workflow `...`
+        3. Click `...`
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, shell, Node.js version, Claude Code version, Codex version, and any relevant config.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: Paste relevant terminal output, screenshots, or artifact excerpts.
