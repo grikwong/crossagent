@@ -1,0 +1,265 @@
+# Crossagent
+
+Cross-model AI agent orchestrator with a browser-based UI. Uses **Claude Code** as planner/implementer and **Codex CLI** as reviewer/verifier across a structured 4-phase workflow.
+
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
+
+```
+┌────────┐  plan.md  ┌────────┐  review.md  ┌────────┐  changes  ┌────────┐
+│ 1.PLAN ├──────────►│2.REVIEW├────────────►│3.IMPL  ├─────────►│4.VERIFY│
+│ Claude │           │ Codex  │             │ Claude │          │ Codex  │
+└────────┘           └────────┘             └────────┘          └────────┘
+```
+
+## Prerequisites
+
+- **Node.js 18+** — for the Web UI
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — authenticated and working
+- [Codex CLI](https://github.com/openai/codex) — authenticated and working
+
+## Project Status
+
+Crossagent is intended to be released as free and open source software for local-first use by developers and teams. The project is usable now, but public releases should still be treated as operator tooling for technically capable users who can install the required CLIs and review generated output.
+
+## Install
+
+### macOS / Linux
+
+```bash
+git clone <this-repo> ~/tools/crossagent
+cd ~/tools/crossagent
+make install-ui     # Installs Web UI dependencies
+```
+
+Optionally install the CLI to your PATH (not required for Web UI):
+
+```bash
+make install                        # Symlinks to /usr/local/bin (may prompt for sudo)
+make install PREFIX=$HOME/.local    # Alternative: user-local (add ~/.local/bin to PATH)
+```
+
+### Windows
+
+Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/) (Windows Subsystem for Linux) and follow the macOS/Linux instructions above. Native Windows is not supported because the `crossagent` CLI is a bash script.
+
+## Quick Start
+
+```bash
+cd ~/tools/crossagent
+make start
+```
+
+This runs preflight checks (Node.js, CLI tools, dependencies) and launches the Web UI at [http://localhost:3456](http://localhost:3456).
+
+To verify prerequisites without starting the server:
+
+```bash
+make check
+```
+
+### Create a workflow
+
+1. Click **+** in the top bar.
+2. Enter a name (e.g. `add-search`), the repository path, and a feature description.
+3. Click **Create**.
+
+### Run phases
+
+1. Click **Run Plan** — Claude opens in the embedded terminal and writes `plan.md`.
+2. When the session ends, the phase tracker advances. Click the `plan.md` artifact to review it.
+3. Click **Run Review** — Codex reviews the plan and writes `review.md`.
+4. Click **Run Implement** — Claude implements per the reviewed plan.
+5. Click **Run Verify** — Codex verifies and writes `verify.md`.
+
+### Controls
+
+| Button | Action |
+|--------|--------|
+| **Run [Phase]** | Starts the current phase in the embedded terminal |
+| **Advance** | Manually advance to the next phase (if auto-detection missed it) |
+| **Done** | Mark the workflow complete |
+| **Artifact sidebar** | Click any artifact to view its rendered markdown |
+| **Workflow selector** | Switch between workflows from the dropdown |
+
+### Web UI configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CROSSAGENT_PORT` | `3456` | Server port |
+| `CROSSAGENT_BIN` | `../crossagent` | Path to the CLI script |
+| `CROSSAGENT_HOME` | `~/.crossagent` | Workflow state directory |
+
+## CLI Reference
+
+The CLI is the engine under the Web UI. It also works standalone.
+
+### Workflows
+
+```bash
+crossagent new <name> [--repo <path>] [--add-dir <path>]...
+crossagent status [--json]
+crossagent list [--json]
+crossagent use <name>
+crossagent reset <name>
+```
+
+Notes:
+- `--repo` must point to an existing directory (defaults to current directory)
+- each `--add-dir` must point to an existing directory
+- extra directory paths cannot contain commas
+
+### Phases
+
+```bash
+crossagent plan [--force]
+crossagent review [--force]
+crossagent implement [--phase <n>] [--force]
+crossagent verify [--force]
+crossagent next                     # Run whatever comes next
+```
+
+### Memory
+
+```bash
+crossagent memory show [--global] [--json]
+crossagent memory list [--global] [--json]
+crossagent memory edit [--global]
+```
+
+- Without `--global`, operates on the current workflow's `memory.md`
+- With `--global`, operates on `~/.crossagent/memory/` (global context and lessons learned)
+- `edit --global` opens `global-context.md` in your `$EDITOR`
+
+### Navigation and recovery
+
+```bash
+crossagent advance                  # Manually advance phase
+crossagent done                     # Mark workflow complete
+crossagent log                      # Display all artifacts
+crossagent open                     # Open workflow directory in file browser
+```
+
+### Agents
+
+Crossagent ships with builtin `claude` and `codex` agents. You can register custom agents and reassign phases:
+
+```bash
+crossagent agents list [--json]
+crossagent agents add <name> --adapter <claude|codex> [--command <cmd>] [--display-name <name>]
+crossagent agents remove <name>
+crossagent agents show [--workflow <name>] [--json]
+crossagent agents assign <phase> <agent> [--workflow <name>]
+crossagent agents reset <phase> [--workflow <name>]
+```
+
+### Integration / automation
+
+```bash
+crossagent status --json
+crossagent list --json
+crossagent phase-cmd <phase> --json [--force] [--phase <n>]
+```
+
+`phase-cmd` returns the exact command, args, cwd, prompt file, and output file for a phase without launching it. This is how the Web UI gets its launch parameters.
+
+## How Each Phase Works
+
+### Phase 1: Plan (Claude Code)
+Claude explores your codebase and writes `plan.md` — overview, affected files, implementation phases, test gates, risks.
+
+### Phase 2: Review (Codex CLI)
+Codex reads the plan against your actual code and writes `review.md` — missing edge cases, correctness, security concerns, verdict (APPROVE / APPROVE WITH CHANGES / REQUEST REWORK).
+
+### Phase 3: Implement (Claude Code)
+Claude reads plan + review and implements. Use `--phase N` for sub-phases.
+
+### Phase 4: Verify (Codex CLI)
+Codex examines the git diff against the plan and writes `verify.md` — status (PASS / FAIL), plan drift, issues, ship recommendation.
+
+## Multi-Repo Workflows
+
+```bash
+crossagent new cross-repo-feature \
+  --repo ~/projects/backend \
+  --add-dir ~/projects/frontend \
+  --add-dir ~/projects/shared-types
+```
+
+All assigned agents get access to all specified directories.
+
+## Tips
+
+- **Don't skip review.** It catches architectural issues before you spend time implementing.
+- **Use sub-phases.** Break implementation into small testable chunks with `--phase N`.
+- **Read the artifacts.** They're your documentation — plan, review, verification report.
+- **Force re-runs.** If a phase produced poor results, use `--force` to redo it.
+
+## Workflow Storage
+
+```text
+~/.crossagent/
+├── current
+├── agents/<name>
+├── memory/
+│   ├── global-context.md       # Cross-workflow patterns & conventions
+│   └── lessons-learned.md      # Retrospective insights
+└── workflows/<name>/
+    ├── config
+    ├── description
+    ├── phase
+    ├── memory.md                # Workflow-scoped memory
+    ├── plan.md
+    ├── review.md
+    ├── verify.md
+    └── prompts/
+        ├── plan.md
+        ├── review.md
+        ├── implement.md
+        └── verify.md
+```
+
+## Architecture
+
+Layered design — see [docs/architecture.md](docs/architecture.md) for the full decision record.
+
+| Layer | What | Where |
+|-------|------|-------|
+| Core | Bash CLI — orchestration, state, prompts | `crossagent` |
+| Integration | `--json` output for machine consumption | CLI flags |
+| Web UI | Browser app — terminals, artifacts, workflow management | `web/` |
+
+## License
+
+This project is licensed under the GNU Affero General Public License, version 3 or later ([`AGPL-3.0-or-later`](./LICENSE)).
+
+Why this license:
+
+- It allows commercial and professional use.
+- If someone modifies Crossagent and makes that modified version available to users, including over a network, they must provide the corresponding source code under the same license.
+- It is the closest standard FOSS license to "improvements must remain open."
+
+Important limitation:
+
+AGPL does **not** force third parties to submit their changes back to this repository as pull requests. It requires source availability to users of the modified software, not mandatory upstream contribution.
+
+## Contributing
+
+Contributions are welcome. Start with [`CONTRIBUTING.md`](./CONTRIBUTING.md), review the [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md), and open an issue before large changes if you want alignment on scope.
+
+By contributing, you agree that your contribution will be licensed under the same AGPL-3.0-or-later license as the rest of the project.
+
+## Contributors
+
+See [`CONTRIBUTORS.md`](./CONTRIBUTORS.md) for the current maintainer list and attribution policy for future contributors.
+
+## Security
+
+If you find a security issue, follow the reporting process in [`SECURITY.md`](./SECURITY.md). Do not open a public issue for undisclosed vulnerabilities.
+
+## Uninstall
+
+```bash
+make uninstall          # Removes CLI symlink
+rm -rf web/node_modules # Removes Web UI dependencies
+rm -rf ~/.crossagent      # Removes all workflow data
+```

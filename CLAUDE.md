@@ -1,0 +1,115 @@
+# Crossagent — AI Agent Instructions
+
+## What This Project Is
+
+Crossagent is a cross-model AI agent orchestrator with a browser-based Web UI. It ships with builtin `claude` and `codex` agents, and each workflow phase can be reassigned to any registered static agent.
+
+Default phase mapping:
+
+1. **Phase 1 — Plan**: `claude`
+2. **Phase 2 — Review**: `codex`
+3. **Phase 3 — Implement**: `claude`
+4. **Phase 4 — Verify**: `codex`
+
+## Project Structure
+
+```
+crossagent/
+├── crossagent          # Bash CLI — core engine (orchestration, state, prompts)
+├── web/              # Web UI — Node.js companion app
+│   ├── server.js     #   Express + WebSocket + PTY server
+│   ├── package.json  #   Dependencies (express, node-pty, ws)
+│   └── public/       #   Browser frontend (HTML, CSS, JS)
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
+├── docs/             # Architecture decision record
+├── CLAUDE.md         # This file
+├── README.md         # Human documentation
+└── Makefile          # Install, check, start targets
+```
+
+Workflow state is stored in `~/.crossagent/`:
+```
+~/.crossagent/
+├── current                          # Active workflow name
+├── agents/<name>                    # Custom static agent definitions
+├── memory/                          # Global memory (cross-workflow)
+│   ├── global-context.md            # Patterns, conventions, accumulated knowledge
+│   └── lessons-learned.md           # Retrospective insights
+└── workflows/<name>/
+    ├── config                       # Key-value config (repo, add_dirs, created, phase agent assignments)
+    ├── description                  # Feature description (multi-line)
+    ├── phase                        # Current phase (1-4 or "done")
+    ├── memory.md                    # Workflow-scoped memory (decisions, findings, notes)
+    ├── plan.md                      # Phase 1 output
+    ├── review.md                    # Phase 2 output
+    ├── verify.md                    # Phase 4 output
+    └── prompts/                     # Generated prompt files
+```
+
+## Memory System
+
+Crossagent has a persistent memory system with three layers:
+
+- **Workflow memory** (`memory.md` in the workflow directory) — per-workflow decisions, findings, and session notes. Initialized on `crossagent new` and updated by each phase agent.
+- **Global context** (`~/.crossagent/memory/global-context.md`) — cross-workflow patterns, conventions, and accumulated knowledge. Updated when agents discover reusable insights.
+- **Lessons learned** (`~/.crossagent/memory/lessons-learned.md`) — retrospective insights about process improvements.
+
+Memory flows into prompts via `gen_memory_context()`, which injects workflow memory and (if substantively edited) global context into each phase prompt. Each prompt also includes `gen_memory_update_instructions()` telling the agent how to update memory after completing its work.
+
+The `crossagent memory` CLI subcommand manages memory:
+- `crossagent memory show [--global] [--json]` — display memory content
+- `crossagent memory list [--global] [--json]` — list memory files
+- `crossagent memory edit [--global]` — open memory in editor
+
+## Bash CLI Conventions
+
+- Pure bash with `set -euo pipefail`, compatible with bash 3.2+ (macOS system bash)
+- Functions prefixed by purpose: `cmd_*` (commands), `gen_*` (prompt generation), `get_*/set_*` (state)
+- No namerefs (`local -n`), no `${,,}` lowercase — these require bash 4.x+
+- Colors via ANSI escape codes, stored in uppercase variables
+- State is stored as simple text files under `~/.crossagent/`
+- JSON output is generated manually; do not add a JSON dependency
+- Static agents stored as config files under `~/.crossagent/agents/`
+- CLI launches use `|| true` to survive non-zero exits (Ctrl+C, errors)
+
+## Web UI Conventions
+
+- Node.js server uses `execFileSync` (not `execSync`) to call the CLI — no shell interpolation
+- All user input is validated server-side before passing to CLI commands
+- PTY sessions are owned by the Web UI; launch params come from `crossagent phase-cmd --json`
+- Frontend uses vanilla JS, no build step — CDN for xterm.js and marked
+- WebSocket protocol: `spawn`, `input`, `resize` from client; `output`, `spawned`, `exit`, `error` from server
+
+## Layered Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the full decision record.
+
+1. **Core layer** — bash CLI (`crossagent`). Source of truth for orchestration, state, and prompt generation.
+2. **Integration layer** — `--json` output on `status`, `list`, `phase-cmd`, and `agents`.
+3. **Web UI layer** — Node.js companion in `web/`. Embeds terminals, renders artifacts, manages workflows.
+
+Critical boundaries:
+- Web UI never writes to `~/.crossagent/` directly — it calls `crossagent advance`/`done` for state changes
+- Web UI owns PTY sessions; bash provides launch params via `crossagent phase-cmd <phase> --json`
+- Web UI exposes agent management through CLI `agents` commands, not direct config writes
+- No orchestration logic is duplicated outside the bash core
+
+## When Modifying the Bash CLI
+
+- Keep zero external dependencies — only bash built-ins, coreutils, and the supported agent CLIs
+- Supported agent adapters are `claude` and `codex`
+- Maintain the phase gate pattern: each phase checks prerequisites before running
+- All output files (plan.md, review.md, verify.md) are written by the launched AI, not by crossagent itself
+- The workflow dir is always passed as `--add-dir` to both adapters
+- Prompt templates are the most impactful thing to improve
+- Test changes with `crossagent new test-workflow --repo /tmp/test-repo`
+
+## When Modifying the Web UI
+
+- Keep the server thin — it should only proxy CLI commands and manage PTY sessions
+- Validate all inputs server-side (names, phases, artifact types)
+- Use `execFileSync` with array args to prevent command injection
+- Don't add a frontend build step — keep it as plain HTML/CSS/JS
+- Test by running `make start` (runs preflight checks then launches server)
