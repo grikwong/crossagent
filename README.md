@@ -11,6 +11,30 @@ Cross-model AI agent orchestrator with a browser-based UI. Uses **Claude Code** 
 └────────┘           └────────┘             └────────┘          └────────┘
 ```
 
+![Crossagent Web UI showing a completed workflow with phase progress, embedded terminal, and rendered artifacts](assets/crossagent-web-ui.jpg)
+
+## Why Crossagent?
+
+AI coding agents are powerful — but trusting a single model to plan, implement, *and* judge its own work is like letting a student grade their own exam. Crossagent exists because **no single AI model should be both the maker and the checker.**
+
+We couldn't find any tool that addressed all four of these problems at once, so we built one.
+
+### Eliminate agent bias with cross-model review
+
+Most AI coding tools use one model for everything. Crossagent breaks that pattern by routing execution and review to **different AI providers** — Claude builds, Codex reviews (or vice versa). A second model with a different training lineage catches assumptions, blind spots, and failure modes that self-review misses. This maker-checker separation is the same principle that makes code review between humans effective, applied to AI agents.
+
+### Predictable, fixed-cost billing
+
+Crossagent runs on top of CLI tools that use **subscription-based plans** (Claude Code via Claude Pro/Max, Codex CLI via ChatGPT Pro), not per-token API billing. No surprise invoices, no cost anxiety mid-workflow. You know what you're paying before you start.
+
+### Auto-improving multi-domain memory
+
+Every workflow builds knowledge. Crossagent maintains **persistent memory across projects and repositories** — codebase patterns, conventions, lessons learned — and feeds it back into future workflows automatically. In multi-project, multi-repo setups, the tool gets smarter with every run instead of starting from zero each time.
+
+### Autonomous execution with sandboxed safety
+
+No more clicking "approve" on every file edit. Crossagent runs agents in **full auto-execute mode** within a sandbox that only has access to the directories you explicitly specify. If the verification phase fails, it **automatically retries** the implement-verify cycle. Hands-off execution with guardrails — not hands-off with fingers crossed.
+
 ## Prerequisites
 
 - **Node.js 18+** — for the Web UI
