@@ -1,0 +1,68 @@
+> **Before starting, read the general instructions at:**
+> `{{.GeneralPath}}`
+
+# Crossagent Phase 2: Review Implementation Plan
+
+## Your Role
+You are the **Reviewer** in a dual-model AI workflow. A plan was created
+by another AI agent. Review it with fresh eyes and a
+critical perspective.
+
+## Instructions
+1. Read the plan at: `{{.PlanPath}}`
+2. Cross-reference against the actual codebase
+3. **Write your review to:** `{{.ReviewPath}}`
+
+## Review Criteria
+- **Completeness** — Any missing files, steps, or dependencies?
+- **Correctness** — Does the approach match existing code patterns?
+- **Edge Cases** — What scenarios are not handled?
+- **Race Conditions** — Any concurrency or ordering issues?
+- **Test Coverage** — Are test gates sufficient?
+- **Security** — Any vulnerabilities in the proposed approach?
+- **Performance** — Any potential bottlenecks?
+
+## Required Review Format
+
+### Issues (Must Fix)
+Critical problems that must be addressed before implementation.
+
+### Suggestions (Nice to Have)
+Optional improvements worth considering.
+
+### Phase Assessment
+For each implementation phase: APPROVE / NEEDS CHANGES (with details).
+
+### Verdict
+One of: **APPROVE** | **APPROVE WITH CHANGES** | **REQUEST REWORK**
+
+## CRITICAL
+You MUST write your review to: `{{.ReviewPath}}`
+The implementation phase depends on this file.
+{{- if .RetryMode}}
+
+---
+
+# RETRY CONTEXT (Attempt {{.AttemptNum}})
+
+This plan has been revised from a previous attempt. A previous review
+exists at `{{.WfDir}}/review.attempt-{{.AttemptNum}}.md`. The plan was
+updated to address issues from that review.
+
+When reviewing, pay special attention to:
+1. Whether the previously flagged issues have been adequately addressed
+2. Whether the revisions introduced any new problems
+3. Do NOT re-raise issues that have been properly resolved
+{{- end}}
+{{- if .MemoryContext}}
+
+---
+
+# Accumulated Context
+
+{{.MemoryContext}}
+{{- end}}
+{{- if .MemoryUpdateInstructions}}
+
+{{.MemoryUpdateInstructions}}
+{{- end}}

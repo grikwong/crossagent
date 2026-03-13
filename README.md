@@ -37,6 +37,7 @@ No more clicking "approve" on every file edit. Crossagent runs agents in **full 
 
 ## Prerequisites
 
+- **Go 1.22+** — for building the core binary
 - **Node.js 18+** — for the Web UI
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — authenticated and working
 - [Codex CLI](https://github.com/openai/codex) — authenticated and working
@@ -44,6 +45,8 @@ No more clicking "approve" on every file edit. Crossagent runs agents in **full 
 ## Project Status
 
 Crossagent is intended to be released as free and open source software for local-first use by developers and teams. The project is usable now, but public releases should still be treated as operator tooling for technically capable users who can install the required CLIs and review generated output.
+
+The core engine is being incrementally rewritten from bash to Go. Phases 1-2 are complete — see [Migration Status](#migration-status) for details.
 
 ## Install
 
@@ -64,7 +67,7 @@ make install PREFIX=$HOME/.local    # Alternative: user-local (add ~/.local/bin 
 
 ### Windows
 
-Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/) (Windows Subsystem for Linux) and follow the macOS/Linux instructions above. Native Windows is not supported because the `crossagent` CLI is a bash script.
+Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/) (Windows Subsystem for Linux) and follow the macOS/Linux instructions above. Native Windows is not yet supported.
 
 ## Quick Start
 
@@ -233,6 +236,27 @@ All assigned agents get access to all specified directories.
 - **Read the artifacts.** They're your documentation — plan, review, verification report.
 - **Force re-runs.** If a phase produced poor results, use `--force` to redo it.
 
+## Source Layout
+
+```text
+crossagent/
+├── crossagent                   # Bash CLI (orchestration, still active)
+├── go.mod                       # Go module (github.com/pvotal-tech/crossagent)
+├── cmd/crossagent/main.go       # Go CLI entry point (not yet fully wired)
+├── internal/
+│   ├── state/                   # Data layer — config, workflow, project, memory
+│   ├── agent/                   # Agent registry, phase assignments, CLI launcher
+│   ├── prompt/                  # Template-based prompt generation & memory context
+│   └── judge/                   # Verdict parsing for review & verify outputs
+├── web/                         # Web UI (Node.js + vanilla JS)
+│   ├── server.js
+│   ├── package.json
+│   └── public/
+├── docs/                        # Architecture decision records
+├── Makefile                     # Install, check, start targets
+└── CLAUDE.md
+```
+
 ## Workflow Storage
 
 ```text
@@ -273,9 +297,62 @@ Layered design — see [docs/architecture.md](docs/architecture.md) for the full
 
 | Layer | What | Where |
 |-------|------|-------|
-| Core | Bash CLI — orchestration, state, prompts | `crossagent` |
+| Core | Go binary — state management, data layer | `cmd/`, `internal/` |
+| Core (legacy) | Bash CLI — orchestration, prompts, agent launching | `crossagent` |
 | Integration | `--json` output for machine consumption | CLI flags |
 | Web UI | Browser app — terminals, artifacts, workflow management | `web/` |
+
+### Go package structure
+
+```
+cmd/crossagent/main.go           # CLI entry point (not yet fully wired)
+
+internal/state/
+├── config.go                    # Workflow config read/write with file locking
+├── workflow.go                  # Workflow & directory state management
+├── project.go                   # Project CRUD & suggestion engine
+├── memory.go                    # Three-tier memory initialization
+└── time.go                      # Time utilities
+
+internal/agent/
+├── agent.go                     # Agent registry, builtin/custom agents, phase assignments
+└── launcher.go                  # Launch parameter building, sandbox settings, agent execution
+
+internal/prompt/
+├── generate.go                  # Prompt generation for all four phases
+├── memory.go                    # Three-tier memory context & update instructions
+├── templates.go                 # Embedded template loader
+└── templates/                   # Go text/template files (general, plan, review, implement, verify)
+
+internal/judge/
+└── verdict.go                   # Verdict parsing (pass/fail/rework) from review & verify outputs
+```
+
+The Go layer uses no external dependencies — only the Go standard library. State files remain backward-compatible with the bash CLI.
+
+## Migration Status
+
+The core engine is being incrementally rewritten from bash to Go. The bash CLI remains fully functional during the transition.
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | Data layer & state management | **Complete** |
+| 2 | Agent orchestration, prompts & judging | **Complete** |
+| 3 | CLI command wiring | Pending |
+
+**Phase 1 delivers:**
+- Typed config parsing with atomic writes and file locking (replacing bare file reads/writes in bash)
+- Workflow, project, and memory state management
+- Legacy migration (automatic backfill of old workflow configs, feature directory relocation)
+
+**Phase 2 delivers:**
+- Agent registry with builtin/custom agent support and phase assignment management
+- CLI launcher with sandboxed subprocess execution and adapter dispatch (claude/codex)
+- Template-based prompt generation for all four workflow phases with embedded templates
+- Three-tier memory context injection (workflow, project, global) into prompts
+- Verdict parsing for structured pass/fail evaluation of review and verify outputs
+
+Zero external dependencies across all Go packages.
 
 ## License
 
@@ -310,5 +387,6 @@ If you find a security issue, follow the reporting process in [`SECURITY.md`](./
 ```bash
 make uninstall          # Removes CLI symlink
 rm -rf web/node_modules # Removes Web UI dependencies
-rm -rf ~/.crossagent      # Removes all workflow data
+rm -rf bin/             # Removes compiled Go binary
+rm -rf ~/.crossagent    # Removes all workflow data
 ```

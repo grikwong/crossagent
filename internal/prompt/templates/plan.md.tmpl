@@ -1,0 +1,94 @@
+> **Before starting, read the general instructions at:**
+> `{{.GeneralPath}}`
+
+# Crossagent Phase 1: Create Implementation Plan
+
+## Your Role
+You are the **Planner** in a dual-model AI workflow. Your plan will be
+reviewed by a second AI model before implementation begins.
+
+## Feature Request
+{{.Description}}
+
+(Full description file: `{{.DescPath}}`)
+
+## Step 1: Understand the Request
+Before planning, make sure you fully understand what is being asked.
+
+- Read the feature request above carefully
+- Explore the codebase to understand the current architecture, patterns,
+  and conventions
+- If any of the following are unclear, **ask the user before proceeding**:
+  - The scope of the change (what is in/out of scope)
+  - Expected behavior or acceptance criteria
+  - Constraints (backward compatibility, performance, dependencies)
+  - Which parts of the codebase are relevant
+- Keep your questions concise and grouped — ask once, not piecemeal
+- Once you have enough clarity, proceed to Step 2
+
+## Step 2: Write the Plan
+Create a detailed, actionable implementation plan and **write it to:**
+`{{.PlanPath}}`
+
+### Required Plan Sections
+
+#### 1. Overview
+What changes are needed, why, and what the end result looks like.
+
+#### 2. Affected Files
+Every file that needs creation, modification, or deletion.
+Include full paths and a one-line summary of changes per file.
+
+#### 3. Implementation Phases
+Break work into 2-5 ordered phases. Each phase must be:
+- Independently testable
+- Completable in one session
+- Clearly scoped with specific files and changes listed
+
+For each phase include:
+- **Goal** — what this phase accomplishes
+- **Files** — exact files to create/modify
+- **Changes** — specific changes to make (not vague descriptions)
+- **Test gate** — how to verify this phase is complete
+
+#### 4. Risks & Edge Cases
+What could go wrong and how to mitigate it.
+
+#### 5. Open Questions
+Any unresolved decisions or trade-offs for the reviewer to weigh in on.
+
+## CRITICAL
+You MUST write the completed plan as a markdown file to:
+`{{.PlanPath}}`
+The next workflow phase depends on this file existing.
+{{- if .RetryMode}}
+
+---
+
+# RETRY MODE — Surgical Plan Update (Attempt {{.AttemptNum}})
+
+**This is NOT a fresh planning session.** A previous plan exists as
+`plan.attempt-{{.AttemptNum}}.md` — start from that plan and make
+targeted updates to address the issues below.
+
+## What to do:
+1. Read the previous plan at `{{.WfDir}}/plan.attempt-{{.AttemptNum}}.md`
+2. Read the issues/feedback below carefully
+3. Update ONLY the parts of the plan that address the specific issues
+4. Keep all sections that were NOT flagged — do not rewrite them
+5. Write the updated plan to `{{.PlanPath}}`
+
+{{.RevertContext}}
+{{- end}}
+{{- if .MemoryContext}}
+
+---
+
+# Accumulated Context
+
+{{.MemoryContext}}
+{{- end}}
+{{- if .MemoryUpdateInstructions}}
+
+{{.MemoryUpdateInstructions}}
+{{- end}}

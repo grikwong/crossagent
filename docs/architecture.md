@@ -6,11 +6,11 @@
 
 Crossagent uses a **layered architecture**:
 
-1. **Core** — Bash CLI (`crossagent`). Source of truth for orchestration, state, and prompt generation.
+1. **Core** — Go packages (`internal/`) provide state management, agent orchestration, prompt generation, and verdict judging. Bash CLI (`crossagent`) handles CLI commands and orchestration (being incrementally replaced by Go).
 2. **Integration** — Machine-readable CLI output (`--json` on `status`, `list`, `phase-cmd`, `agents`).
 3. **Web UI** — Local Node.js companion (`web/`). Embeds terminals, renders artifacts, manages workflows visually.
 
-The bash CLI is the engine. The Web UI is the primary operator experience. Both are shipped.
+The Go packages provide the foundational libraries. The bash CLI wires them into commands (being replaced). The Web UI is the primary operator experience. All layers are shipped.
 
 ## Why This Architecture
 
@@ -65,16 +65,18 @@ No logic duplication. Bash owns orchestration. UI owns presentation and PTY life
 
 | Data | Owner | Storage |
 |------|-------|---------|
-| Workflow state | Bash CLI | `~/.crossagent/` files |
-| Markdown artifacts | Bash CLI | `~/.crossagent/workflows/<name>/*.md` |
-| Agent definitions | Bash CLI | `~/.crossagent/agents/` |
+| Workflow state | Go/Bash CLI | `~/.crossagent/` files |
+| Markdown artifacts | Go/Bash CLI | `~/.crossagent/workflows/<name>/*.md` |
+| Agent definitions | Go/Bash CLI | `~/.crossagent/agents/` |
+| Prompt generation | Go/Bash CLI | `~/.crossagent/workflows/<name>/prompts/` |
 | PTY sessions | Web UI | Transient (in-memory) |
 | Presentation state | Web UI | Transient (browser) |
 
 ## Architectural Boundaries
 
-1. Bash CLI is the single source of truth for workflow state
+1. Go packages and bash CLI jointly manage workflow state (Go provides typed, safe access; bash is being incrementally replaced)
 2. Web UI never writes to `~/.crossagent/` directly — it calls `crossagent advance`/`done`
 3. Web UI uses `phase-cmd --json` for launch params — no duplicated phase logic
 4. Web UI exposes agent management through CLI commands, not direct config writes
 5. Every workflow action remains possible via CLI alone
+6. Go and bash state formats are backward-compatible — same key=value configs, same file layout
