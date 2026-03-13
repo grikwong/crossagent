@@ -31,6 +31,10 @@ Crossagent runs on top of CLI tools that use **subscription-based plans** (Claud
 
 Every workflow builds knowledge. Crossagent maintains **persistent memory at three scopes** — global (cross-project), project (per-project patterns and features), and workflow (per-task decisions) — and feeds it back into future workflows automatically. In multi-project, multi-repo setups, the tool gets smarter with every run instead of starting from zero each time.
 
+### Context engineering through file-based RAG
+
+AI agents live and die by what fits in their context window. Crossagent treats context as a first-class engineering problem — it uses **retrieval-augmented generation** to feed each phase agent exactly the context it needs: relevant memory tiers, prior phase outputs, and project knowledge, all assembled from plain files on disk. Every input and output — plans, reviews, prompts, memory — is a **human-readable file** you can inspect, edit, and version-control. Nothing is hidden in opaque embeddings or databases. This means you can verify what the agent saw, manually correct or enrich context before a phase runs, and build up reusable project knowledge that compounds over time. Crossagent doesn't just run agents — it helps you do context engineering properly, efficiently, and transparently.
+
 ### Autonomous execution with sandboxed safety
 
 No more clicking "approve" on every file edit. Crossagent runs agents in **full auto-execute mode** within a sandbox that only has access to the directories you explicitly specify. If the verification phase fails, it **automatically retries** the implement-verify cycle. Hands-off execution with guardrails — not hands-off with fingers crossed.
@@ -46,8 +50,6 @@ No more clicking "approve" on every file edit. Crossagent runs agents in **full 
 
 Crossagent is intended to be released as free and open source software for local-first use by developers and teams. The project is usable now, but public releases should still be treated as operator tooling for technically capable users who can install the required CLIs and review generated output.
 
-The core engine is being incrementally rewritten from bash to Go. Phases 1-3 are complete — see [Migration Status](#migration-status) for details.
-
 ## Install
 
 ### macOS / Linux
@@ -55,14 +57,21 @@ The core engine is being incrementally rewritten from bash to Go. Phases 1-3 are
 ```bash
 git clone <this-repo> ~/tools/crossagent
 cd ~/tools/crossagent
-make install-ui     # Installs Web UI dependencies
+make build           # Compiles the Go binary
+make install-ui      # Installs Web UI dependencies
 ```
 
 Optionally install the CLI to your PATH (not required for Web UI):
 
 ```bash
-make install                        # Symlinks to /usr/local/bin (may prompt for sudo)
+make install                        # Copies binary to /usr/local/bin (may prompt for sudo)
 make install PREFIX=$HOME/.local    # Alternative: user-local (add ~/.local/bin to PATH)
+```
+
+Or install directly via Go:
+
+```bash
+go install github.com/pvotal-tech/crossagent/cmd/crossagent@latest
 ```
 
 ### Windows
@@ -76,7 +85,7 @@ cd ~/tools/crossagent
 make start
 ```
 
-This runs preflight checks (Node.js, CLI tools, dependencies) and launches the Web UI at [http://localhost:3456](http://localhost:3456).
+This runs preflight checks (Go binary, Node.js, CLI tools, dependencies) and launches the Web UI at [http://localhost:3456](http://localhost:3456).
 
 To verify prerequisites without starting the server:
 
@@ -113,7 +122,7 @@ make check
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CROSSAGENT_PORT` | `3456` | Server port |
-| `CROSSAGENT_BIN` | `../crossagent` | Path to the CLI script |
+| `CROSSAGENT_BIN` | `../crossagent` | Path to the compiled Go binary |
 | `CROSSAGENT_HOME` | `~/.crossagent` | Workflow state directory |
 
 ## CLI Reference
@@ -240,7 +249,6 @@ All assigned agents get access to all specified directories.
 
 ```text
 crossagent/
-├── crossagent                   # Bash CLI (orchestration, still active)
 ├── go.mod                       # Go module (github.com/pvotal-tech/crossagent)
 ├── cmd/crossagent/main.go       # Go CLI entry point (fully wired)
 ├── internal/
@@ -249,12 +257,14 @@ crossagent/
 │   ├── cli/                     # JSON types, ordered serialization, hybrid formatting
 │   ├── prompt/                  # Template-based prompt generation & memory context
 │   └── judge/                   # Verdict parsing for review & verify outputs
+├── test/                        # Integration test suite
+│   └── integration_test.sh
 ├── web/                         # Web UI (Node.js + vanilla JS)
 │   ├── server.js
 │   ├── package.json
 │   └── public/
 ├── docs/                        # Architecture decision records
-├── Makefile                     # Install, check, start targets
+├── Makefile                     # Build, test, install targets
 └── CLAUDE.md
 ```
 
@@ -298,8 +308,7 @@ Layered design — see [docs/architecture.md](docs/architecture.md) for the full
 
 | Layer | What | Where |
 |-------|------|-------|
-| Core | Go binary — state management, data layer | `cmd/`, `internal/` |
-| Core (legacy) | Bash CLI — orchestration, prompts, agent launching | `crossagent` |
+| Core | Go binary — state management, agent orchestration, prompts, judging | `cmd/`, `internal/` |
 | Integration | `--json` output for machine consumption | CLI flags |
 | Web UI | Browser app — terminals, artifacts, workflow management | `web/` |
 
@@ -332,40 +341,25 @@ internal/judge/
 └── verdict.go                   # Verdict parsing (pass/fail/rework) from review & verify outputs
 ```
 
-The Go layer uses no external dependencies — only the Go standard library. State files remain backward-compatible with the bash CLI.
+Zero external dependencies — only the Go standard library.
 
-## Migration Status
+## Development
 
-The core engine is being incrementally rewritten from bash to Go. The bash CLI remains fully functional during the transition.
+```bash
+make build    # Compile the Go binary
+make test     # Run unit tests + integration tests
+make clean    # Remove build artifacts
+make check    # Preflight checks (Go, Node, CLIs, dependencies)
+make start    # Build + check + launch web UI
+```
 
-| Phase | Scope | Status |
-|-------|-------|--------|
-| 1 | Data layer & state management | **Complete** |
-| 2 | Agent orchestration, prompts & judging | **Complete** |
-| 3 | CLI command dispatch & JSON output parity | **Complete** |
+## Uninstall
 
-**Phase 1 delivers:**
-- Typed config parsing with atomic writes and file locking (replacing bare file reads/writes in bash)
-- Workflow, project, and memory state management
-- Legacy migration (automatic backfill of old workflow configs, feature directory relocation)
-
-**Phase 2 delivers:**
-- Agent registry with builtin/custom agent support and phase assignment management
-- CLI launcher with sandboxed subprocess execution and adapter dispatch (claude/codex)
-- Template-based prompt generation for all four workflow phases with embedded templates
-- Three-tier memory context injection (workflow, project, global) into prompts
-- Verdict parsing for structured pass/fail evaluation of review and verify outputs
-
-**Phase 3 delivers:**
-- Full CLI command dispatch from Go (`cmd/crossagent/main.go`) replacing bash command routing
-- Deterministic JSON key ordering matching bash CLI output (ordered structs instead of Go maps)
-- Hybrid JSON formatting for `status --json` and `phase-cmd --json` (top-level indented, nested compact)
-- Custom memory JSON serialization with per-type shapes (workflow/global/project)
-- No HTML escaping in JSON output, matching bash behavior
-- Glob-compatible sorting for workflow and project listings (macOS collation)
-- Phase validation, error message parity, and trailing newline trimming for bash compatibility
-
-Zero external dependencies across all Go packages.
+```bash
+make uninstall          # Removes CLI binary from /usr/local/bin
+rm -rf web/node_modules # Removes Web UI dependencies
+rm -rf ~/.crossagent    # Removes all workflow data
+```
 
 ## License
 
@@ -394,12 +388,3 @@ See [`CONTRIBUTORS.md`](./CONTRIBUTORS.md) for the current maintainer list and a
 ## Security
 
 If you find a security issue, follow the reporting process in [`SECURITY.md`](./SECURITY.md). Do not open a public issue for undisclosed vulnerabilities.
-
-## Uninstall
-
-```bash
-make uninstall          # Removes CLI symlink
-rm -rf web/node_modules # Removes Web UI dependencies
-rm -rf bin/             # Removes compiled Go binary
-rm -rf ~/.crossagent    # Removes all workflow data
-```

@@ -1,41 +1,50 @@
+BINARY := crossagent
 PREFIX ?= /usr/local
 
-.PHONY: install uninstall install-ui start check
+.PHONY: build test install uninstall install-ui check start clean
 
-install:
-	@chmod +x crossagent
+build:
+	go build -o $(BINARY) ./cmd/crossagent
+
+test: build
+	go test ./...
+	bash test/integration_test.sh ./$(BINARY)
+
+install: build
 	@mkdir -p "$(PREFIX)/bin" 2>/dev/null || true
-	@if ln -sf "$(CURDIR)/crossagent" "$(PREFIX)/bin/crossagent" 2>/dev/null; then \
-		echo "✓ Installed crossagent to $(PREFIX)/bin/crossagent"; \
-	elif sudo ln -sf "$(CURDIR)/crossagent" "$(PREFIX)/bin/crossagent"; then \
-		echo "✓ Installed crossagent to $(PREFIX)/bin/crossagent (via sudo)"; \
-	else \
-		echo "✗ Permission denied. Try: make install PREFIX=\$$HOME/.local"; \
-		echo "  (ensure ~/.local/bin is in your PATH)"; \
-		exit 1; \
-	fi
+	@cp $(BINARY) "$(PREFIX)/bin/$(BINARY)" 2>/dev/null && \
+		echo "✓ Installed $(BINARY) to $(PREFIX)/bin/$(BINARY)" || \
+	(sudo cp $(BINARY) "$(PREFIX)/bin/$(BINARY)" && \
+		echo "✓ Installed $(BINARY) to $(PREFIX)/bin/$(BINARY) (via sudo)")
+
+uninstall:
+	@rm -f "$(PREFIX)/bin/$(BINARY)" 2>/dev/null || \
+		sudo rm -f "$(PREFIX)/bin/$(BINARY)" 2>/dev/null || true
+	@echo "✓ Removed $(BINARY) from $(PREFIX)/bin"
 
 install-ui:
 	@cd web && npm install
 	@echo "✓ Web UI dependencies installed"
 
-uninstall:
-	@rm -f "$(PREFIX)/bin/crossagent" 2>/dev/null || \
-		sudo rm -f "$(PREFIX)/bin/crossagent" 2>/dev/null || true
-	@echo "✓ Removed crossagent from $(PREFIX)/bin"
-
-check:
+check: build
 	@echo ""
 	@echo "  Crossagent — Preflight Checks"
 	@echo "  ─────────────────────────────────────────"
 	@echo ""
 	@PASS=true; \
-	printf "  %-28s" "bash (3.2+)"; \
-	if bash --version >/dev/null 2>&1; then \
-		V=$$(bash -c 'echo $${BASH_VERSION}'); \
+	printf "  %-28s" "go (1.22+)"; \
+	if command -v go >/dev/null 2>&1; then \
+		V=$$(go version | awk '{print $$3}'); \
 		echo "✓  $$V"; \
 	else \
 		echo "✗  not found"; PASS=false; \
+	fi; \
+	printf "  %-28s" "crossagent binary"; \
+	if [ -x "./$(BINARY)" ]; then \
+		V=$$(./$(BINARY) version 2>&1); \
+		echo "✓  $$V"; \
+	else \
+		echo "✗  not found — run: make build"; PASS=false; \
 	fi; \
 	printf "  %-28s" "node (18+)"; \
 	if command -v node >/dev/null 2>&1; then \
@@ -66,18 +75,6 @@ check:
 		echo "✓  found"; \
 	else \
 		echo "✗  not found — install: https://github.com/openai/codex"; PASS=false; \
-	fi; \
-	printf "  %-28s" "crossagent CLI"; \
-	if [ -x "$(CURDIR)/crossagent" ]; then \
-		echo "✓  $(CURDIR)/crossagent"; \
-	else \
-		echo "✗  not executable"; PASS=false; \
-	fi; \
-	printf "  %-28s" "crossagent --version"; \
-	if "$(CURDIR)/crossagent" version >/dev/null 2>&1; then \
-		echo "✓  $$("$(CURDIR)/crossagent" version 2>&1)"; \
-	else \
-		echo "✗  failed to run"; PASS=false; \
 	fi; \
 	printf "  %-28s" "web/node_modules"; \
 	if [ -d "$(CURDIR)/web/node_modules" ]; then \
@@ -113,3 +110,7 @@ start: check
 	@echo "  Starting Crossagent Web UI..."
 	@echo ""
 	@cd web && node server.js
+
+clean:
+	@rm -f $(BINARY)
+	@echo "✓ Removed $(BINARY)"
