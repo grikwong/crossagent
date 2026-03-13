@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -89,7 +90,7 @@ func SetCurrent(name string) error {
 	return os.WriteFile(filepath.Join(Home(), "current"), []byte(name+"\n"), 0644)
 }
 
-// ListWorkflows returns a list of workflow names.
+// ListWorkflows returns a list of workflow names sorted to match bash glob ordering.
 func ListWorkflows() ([]string, error) {
 	entries, err := os.ReadDir(WorkflowsDir())
 	if err != nil {
@@ -105,7 +106,49 @@ func ListWorkflows() ([]string, error) {
 			names = append(names, e.Name())
 		}
 	}
+	GlobSort(names)
 	return names, nil
+}
+
+// GlobSort sorts a string slice to match macOS bash glob ordering.
+// In macOS glob collation, non-alphanumeric characters (hyphens, underscores, dots)
+// sort before end-of-string, unlike Go's byte comparison where end-of-string sorts
+// before any character. This matters for names like "foo-bar" vs "foo".
+func GlobSort(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		return globCompare(names[i], names[j]) < 0
+	})
+}
+
+func globCompare(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return int(a[i]) - int(b[i])
+		}
+	}
+	if len(a) == len(b) {
+		return 0
+	}
+	// One string is a prefix of the other.
+	// Match macOS glob collation: non-alphanumeric chars sort before end-of-string.
+	if len(a) > len(b) {
+		if !isAlphaNum(a[n]) {
+			return -1
+		}
+		return 1
+	}
+	if !isAlphaNum(b[n]) {
+		return 1
+	}
+	return -1
+}
+
+func isAlphaNum(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // WorkflowExists checks if a workflow directory exists.

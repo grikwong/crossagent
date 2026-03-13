@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -583,23 +584,23 @@ func cmdStatus(args []string) {
 			Description: desc,
 			Created:     cfg.Created,
 			WorkflowDir: d,
-			Agents: map[string]cli.AgentRefJSON{
-				"plan":      {Name: planAg.Name, DisplayName: planAg.DisplayName},
-				"review":    {Name: reviewAg.Name, DisplayName: reviewAg.DisplayName},
-				"implement": {Name: implementAg.Name, DisplayName: implementAg.DisplayName},
-				"verify":    {Name: verifyAg.Name, DisplayName: verifyAg.DisplayName},
+			Agents: cli.OrderedAgents{
+				Plan:      cli.AgentRefJSON{Name: planAg.Name, DisplayName: planAg.DisplayName},
+				Review:    cli.AgentRefJSON{Name: reviewAg.Name, DisplayName: reviewAg.DisplayName},
+				Implement: cli.AgentRefJSON{Name: implementAg.Name, DisplayName: implementAg.DisplayName},
+				Verify:    cli.AgentRefJSON{Name: verifyAg.Name, DisplayName: verifyAg.DisplayName},
 			},
 			RetryCount: retryCount,
 			MaxRetries: maxRetries,
-			Artifacts: map[string]cli.ArtifactJSON{
-				"plan":      makeArtifact(filepath.Join(d, "plan.md")),
-				"review":    makeArtifact(filepath.Join(d, "review.md")),
-				"implement": makeArtifact(filepath.Join(d, "implement.md")),
-				"verify":    makeArtifact(filepath.Join(d, "verify.md")),
-				"memory":    makeArtifact(filepath.Join(d, "memory.md")),
+			Artifacts: cli.OrderedArtifacts{
+				Plan:      makeArtifact(filepath.Join(d, "plan.md")),
+				Review:    makeArtifact(filepath.Join(d, "review.md")),
+				Implement: makeArtifact(filepath.Join(d, "implement.md")),
+				Verify:    makeArtifact(filepath.Join(d, "verify.md")),
+				Memory:    makeArtifact(filepath.Join(d, "memory.md")),
 			},
 		}
-		if err := cli.PrintJSON(out); err != nil {
+		if err := cli.PrintStatusJSON(out); err != nil {
 			die(err.Error())
 		}
 		return
@@ -682,11 +683,11 @@ func cmdList(args []string) {
 				PhaseLabel: state.PhaseLabel(wphase),
 				Active:     wname == current,
 				Project:    wproject,
-				Agents: map[string]string{
-					"plan":      phaseAgentName(d, "plan"),
-					"review":    phaseAgentName(d, "review"),
-					"implement": phaseAgentName(d, "implement"),
-					"verify":    phaseAgentName(d, "verify"),
+				Agents: cli.OrderedAgentNames{
+					Plan:      phaseAgentName(d, "plan"),
+					Review:    phaseAgentName(d, "review"),
+					Implement: phaseAgentName(d, "implement"),
+					Verify:    phaseAgentName(d, "verify"),
 				},
 			})
 		}
@@ -1089,11 +1090,11 @@ func cmdAgentsShow(args []string) {
 	if jsonMode {
 		out := cli.AgentsShowJSON{
 			Workflow: workflow,
-			Agents: map[string]string{
-				"plan":      planAg.Name,
-				"review":    reviewAg.Name,
-				"implement": implementAg.Name,
-				"verify":    verifyAg.Name,
+			Agents: cli.OrderedAgentNames{
+				Plan:      planAg.Name,
+				Review:    reviewAg.Name,
+				Implement: implementAg.Name,
+				Verify:    verifyAg.Name,
 			},
 		}
 		if err := cli.PrintJSONCompact(out); err != nil {
@@ -1829,6 +1830,14 @@ func cmdPhaseCmd(args []string) {
 		die("Usage: crossagent phase-cmd <plan|review|implement|verify> [--json] [--phase N]")
 	}
 
+	// Bash only accepts named phases, not numeric ones.
+	switch phaseArg {
+	case "plan", "review", "implement", "impl", "verify":
+		// valid
+	default:
+		die(fmt.Sprintf("Unknown phase: %s. Use: plan, review, implement, verify", phaseArg))
+	}
+
 	name, d, err := cli.RequireWorkflow()
 	if err != nil {
 		die(err.Error())
@@ -1840,7 +1849,7 @@ func cmdPhaseCmd(args []string) {
 	}
 
 	if jsonMode {
-		if err := cli.PrintJSON(result); err != nil {
+		if err := printPhaseCmdJSON(result); err != nil {
 			die(err.Error())
 		}
 		return
@@ -2278,12 +2287,12 @@ func cmdMemoryShow(globalFlag, projectFlag bool, projectName string, jsonMode bo
 	if projectFlag {
 		projMemDir := state.ProjectMemoryDir(projectName)
 		if jsonMode {
-			files := make(map[string]cli.MemoryFileJSON)
+			files := cli.NewOrderedFileMap()
 			memFiles, _ := state.ListProjectMemoryFiles(projectName)
 			for _, fpath := range memFiles {
 				relName, _ := filepath.Rel(projMemDir, fpath)
 				data, _ := os.ReadFile(fpath)
-				files[relName] = cli.MemoryFileJSON{Path: fpath, Content: string(data)}
+				files.Set(relName, cli.MemoryFileJSON{Path: fpath, Content: string(data)})
 			}
 			out := cli.MemoryShowJSON{Type: "project", Name: projectName, Files: files}
 			cli.PrintJSONCompact(out)
@@ -2316,10 +2325,9 @@ func cmdMemoryShow(globalFlag, projectFlag bool, projectName string, jsonMode bo
 		if jsonMode {
 			gcContent := readFileStr(filepath.Join(memDir, "global-context.md"))
 			llContent := readFileStr(filepath.Join(memDir, "lessons-learned.md"))
-			files := map[string]cli.MemoryFileJSON{
-				"global-context.md":  {Path: filepath.Join(memDir, "global-context.md"), Content: gcContent},
-				"lessons-learned.md": {Path: filepath.Join(memDir, "lessons-learned.md"), Content: llContent},
-			}
+			files := cli.NewOrderedFileMap()
+			files.Set("global-context.md", cli.MemoryFileJSON{Path: filepath.Join(memDir, "global-context.md"), Content: gcContent})
+			files.Set("lessons-learned.md", cli.MemoryFileJSON{Path: filepath.Join(memDir, "lessons-learned.md"), Content: llContent})
 			out := cli.MemoryShowJSON{Type: "global", Files: files}
 			cli.PrintJSONCompact(out)
 		} else {
@@ -2628,7 +2636,45 @@ func readFileStr(path string) string {
 	if err != nil {
 		return ""
 	}
-	return string(data)
+	// Strip trailing newlines to match bash command substitution behavior.
+	// Bash: content=$(cat file) strips trailing newlines before JSON embedding.
+	return strings.TrimRight(string(data), "\n")
+}
+
+// printPhaseCmdJSON writes phase-cmd JSON in the exact hybrid format matching bash CLI:
+// top-level keys indented 2 spaces, nested agent object and args array compact.
+func printPhaseCmdJSON(r *agent.PhaseCmdResult) error {
+	mc := func(v any) string {
+		b, _ := cli.MarshalCompact(v)
+		return string(b)
+	}
+	js := func(s string) string {
+		b, _ := cli.MarshalCompact(s)
+		return string(b)
+	}
+
+	outFile := "null"
+	if r.OutputFile != nil {
+		outFile = js(*r.OutputFile)
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("{\n")
+	fmt.Fprintf(&buf, "  \"agent\": %s,\n", mc(r.Agent))
+	fmt.Fprintf(&buf, "  \"command\": %s,\n", js(r.Command))
+	fmt.Fprintf(&buf, "  \"args\": %s,\n", mc(r.Args))
+	fmt.Fprintf(&buf, "  \"cwd\": %s,\n", js(r.Cwd))
+	fmt.Fprintf(&buf, "  \"prompt\": %s,\n", js(r.Prompt))
+	fmt.Fprintf(&buf, "  \"prompt_file\": %s,\n", js(r.PromptFile))
+	fmt.Fprintf(&buf, "  \"output_file\": %s,\n", outFile)
+	fmt.Fprintf(&buf, "  \"phase\": %d,\n", r.Phase)
+	fmt.Fprintf(&buf, "  \"phase_label\": %s,\n", js(r.PhaseLabel))
+	fmt.Fprintf(&buf, "  \"workflow\": %s,\n", js(r.Workflow))
+	fmt.Fprintf(&buf, "  \"workflow_dir\": %s\n", js(r.WorkflowDir))
+	buf.WriteString("}\n")
+
+	_, err := os.Stdout.Write(buf.Bytes())
+	return err
 }
 
 func hasFlag(args []string, flag string) bool {

@@ -46,7 +46,7 @@ No more clicking "approve" on every file edit. Crossagent runs agents in **full 
 
 Crossagent is intended to be released as free and open source software for local-first use by developers and teams. The project is usable now, but public releases should still be treated as operator tooling for technically capable users who can install the required CLIs and review generated output.
 
-The core engine is being incrementally rewritten from bash to Go. Phases 1-2 are complete — see [Migration Status](#migration-status) for details.
+The core engine is being incrementally rewritten from bash to Go. Phases 1-3 are complete — see [Migration Status](#migration-status) for details.
 
 ## Install
 
@@ -242,10 +242,11 @@ All assigned agents get access to all specified directories.
 crossagent/
 ├── crossagent                   # Bash CLI (orchestration, still active)
 ├── go.mod                       # Go module (github.com/grikwong/crossagent)
-├── cmd/crossagent/main.go       # Go CLI entry point (not yet fully wired)
+├── cmd/crossagent/main.go       # Go CLI entry point (fully wired)
 ├── internal/
 │   ├── state/                   # Data layer — config, workflow, project, memory
 │   ├── agent/                   # Agent registry, phase assignments, CLI launcher
+│   ├── cli/                     # JSON types, ordered serialization, hybrid formatting
 │   ├── prompt/                  # Template-based prompt generation & memory context
 │   └── judge/                   # Verdict parsing for review & verify outputs
 ├── web/                         # Web UI (Node.js + vanilla JS)
@@ -305,7 +306,7 @@ Layered design — see [docs/architecture.md](docs/architecture.md) for the full
 ### Go package structure
 
 ```
-cmd/crossagent/main.go           # CLI entry point (not yet fully wired)
+cmd/crossagent/main.go           # CLI entry point (fully wired)
 
 internal/state/
 ├── config.go                    # Workflow config read/write with file locking
@@ -317,6 +318,9 @@ internal/state/
 internal/agent/
 ├── agent.go                     # Agent registry, builtin/custom agents, phase assignments
 └── launcher.go                  # Launch parameter building, sandbox settings, agent execution
+
+internal/cli/
+└── output.go                    # JSON types, ordered serialization, hybrid formatting
 
 internal/prompt/
 ├── generate.go                  # Prompt generation for all four phases
@@ -338,7 +342,7 @@ The core engine is being incrementally rewritten from bash to Go. The bash CLI r
 |-------|-------|--------|
 | 1 | Data layer & state management | **Complete** |
 | 2 | Agent orchestration, prompts & judging | **Complete** |
-| 3 | CLI command wiring | Pending |
+| 3 | CLI command dispatch & JSON output parity | **Complete** |
 
 **Phase 1 delivers:**
 - Typed config parsing with atomic writes and file locking (replacing bare file reads/writes in bash)
@@ -351,6 +355,15 @@ The core engine is being incrementally rewritten from bash to Go. The bash CLI r
 - Template-based prompt generation for all four workflow phases with embedded templates
 - Three-tier memory context injection (workflow, project, global) into prompts
 - Verdict parsing for structured pass/fail evaluation of review and verify outputs
+
+**Phase 3 delivers:**
+- Full CLI command dispatch from Go (`cmd/crossagent/main.go`) replacing bash command routing
+- Deterministic JSON key ordering matching bash CLI output (ordered structs instead of Go maps)
+- Hybrid JSON formatting for `status --json` and `phase-cmd --json` (top-level indented, nested compact)
+- Custom memory JSON serialization with per-type shapes (workflow/global/project)
+- No HTML escaping in JSON output, matching bash behavior
+- Glob-compatible sorting for workflow and project listings (macOS collation)
+- Phase validation, error message parity, and trailing newline trimming for bash compatibility
 
 Zero external dependencies across all Go packages.
 

@@ -47,12 +47,17 @@ func ListProjects() ([]ProjectInfo, error) {
 		return nil, err
 	}
 
-	var projects []ProjectInfo
+	// Collect names first, then sort to match bash glob ordering
+	var names []string
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+		if e.IsDir() {
+			names = append(names, e.Name())
 		}
-		name := e.Name()
+	}
+	GlobSort(names)
+
+	var projects []ProjectInfo
+	for _, name := range names {
 		count, _ := countProjectWorkflows(name)
 		projects = append(projects, ProjectInfo{
 			Name:          name,

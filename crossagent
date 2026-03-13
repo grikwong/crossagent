@@ -4,6 +4,12 @@ set -euo pipefail
 # ============================================================================
 # crossagent — Cross-Model AI Agent Orchestrator
 # Leverages Claude Code (planner/implementer) + Codex CLI (reviewer/verifier)
+#
+# DEPRECATED: This bash CLI is superseded by the Go binary at cmd/crossagent/.
+# The Go rewrite (Phases 1-3) provides typed state management, deterministic
+# JSON output, and full CLI command dispatch. This file is retained during the
+# transition but should not receive new features. Remove once the Go binary
+# is the sole entry point.
 # ============================================================================
 
 CROSSAGENT_VERSION="1.0.0"

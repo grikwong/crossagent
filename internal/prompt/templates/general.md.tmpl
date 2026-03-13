@@ -65,8 +65,8 @@ ambiguous pronouns like "the function" without naming it.
 - Do NOT rename, move, or delete other phase artifacts (plan.md,
   review.md, implement.md, verify.md).
 - **Memory files are shared metadata** — all phase agents may read
-  and update `memory.md` (workflow) and files under
-  `~/.crossagent/memory/` (global). See the Memory System section below.
+  and update \`memory.md\` (workflow) and files under
+  \`~/.crossagent/memory/\` (global). See the Memory System section below.
 
 ## 5. Communication Style
 
@@ -96,18 +96,18 @@ ambiguous pronouns like "the function" without naming it.
 Crossagent maintains a persistent memory system with three tiers to
 accumulate knowledge across phases and workflows:
 
-- **Workflow memory** (`memory.md` in the workflow directory) — tracks
+- **Workflow memory** (\`memory.md\` in the workflow directory) — tracks
   decisions, findings, and session notes for this specific workflow.
   All phase agents should update this after completing their work.
-- **Project memory** (`~/.crossagent/projects/<name>/memory/`) — tracks
+- **Project memory** (\`~/.crossagent/projects/<name>/memory/\`) — tracks
   project-specific patterns, conventions, and feature context shared
   across all workflows in this project. Update when you discover
   knowledge relevant to the project but not broadly reusable.
-- **Global memory** (`~/.crossagent/memory/`) — captures cross-project
+- **Global memory** (\`~/.crossagent/memory/\`) — captures cross-project
   patterns, conventions, and lessons learned. Update only when you
   discover genuinely reusable knowledge.
 
-Memory files are provided via `--add-dir` and sandbox settings.
+Memory files are provided via \`--add-dir\` and sandbox settings.
 Your phase prompt includes specific memory update instructions.
 
 ## 9. Workspace Directories

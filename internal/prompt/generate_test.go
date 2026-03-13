@@ -383,8 +383,8 @@ func TestGeneralPromptParityWithBash(t *testing.T) {
 		"3. **Implement** — execute the reviewed plan",
 		"4. **Verify** — independently verify the implementation",
 		// Memory system tiers (exact text from bash — note backticks)
-		"- **Workflow memory** (`memory.md` in the workflow directory)",
-		"- **Global memory** (`~/.crossagent/memory/`)",
+		"- **Workflow memory** (\\`memory.md\\` in the workflow directory)",
+		"- **Global memory** (\\`~/.crossagent/memory/\\`)",
 		// Workspace directory formatting
 		"/add-dir " + wfDir,
 		"/add-dir /tmp/test-repo",

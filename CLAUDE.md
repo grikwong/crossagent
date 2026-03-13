@@ -17,10 +17,11 @@ Default phase mapping:
 crossagent/
 ├── crossagent          # Bash CLI — orchestration engine (still active)
 ├── go.mod              # Go module (github.com/grikwong/crossagent)
-├── cmd/crossagent/     # Go CLI entry point (not yet fully wired)
+├── cmd/crossagent/     # Go CLI entry point (fully wired)
 ├── internal/
 │   ├── state/          #   Data layer — config, workflow, project, memory
 │   ├── agent/          #   Agent registry, phase assignments, CLI launcher
+│   ├── cli/            #   JSON types, ordered serialization, hybrid formatting
 │   ├── prompt/         #   Template-based prompt generation & memory context
 │   │   └── templates/  #     Embedded Go templates (general, plan, review, implement, verify)
 │   └── judge/          #   Verdict parsing for review & verify outputs
