@@ -1,1 +1,6 @@
 web/node_modules/
+
+# Go build artifacts
+/bin/
+/dist/
+*.exe
