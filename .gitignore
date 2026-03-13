@@ -1,6 +1,7 @@
 web/node_modules/
 
 # Go build artifacts
+/crossagent
 /bin/
 /dist/
 *.exe

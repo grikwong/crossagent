@@ -15,7 +15,6 @@ Default phase mapping:
 
 ```
 crossagent/
-├── crossagent          # Bash CLI — orchestration engine (still active)
 ├── go.mod              # Go module (github.com/grikwong/crossagent)
 ├── cmd/crossagent/     # Go CLI entry point (fully wired)
 ├── internal/
@@ -25,6 +24,9 @@ crossagent/
 │   ├── prompt/         #   Template-based prompt generation & memory context
 │   │   └── templates/  #     Embedded Go templates (general, plan, review, implement, verify)
 │   └── judge/          #   Verdict parsing for review & verify outputs
+├── crossagent-legacy.sh  # Deprecated bash CLI (retained for compatibility testing)
+├── test/             # Integration test suite
+│   └── integration_test.sh
 ├── web/              # Web UI — Node.js companion app
 │   ├── server.js     #   Express + WebSocket + PTY server
 │   ├── package.json  #   Dependencies (express, node-pty, ws)
@@ -35,7 +37,7 @@ crossagent/
 ├── docs/             # Architecture decision record
 ├── CLAUDE.md         # This file
 ├── README.md         # Human documentation
-└── Makefile          # Install, check, start targets
+└── Makefile          # Build, test, install, check, start targets
 ```
 
 Workflow state is stored in `~/.crossagent/`:
@@ -77,8 +79,7 @@ Crossagent has a persistent memory system with three tiers:
 
 Memory flows into prompts via memory context builders that inject all three tiers (workflow -> project -> global) into each phase prompt. Each prompt also includes memory update instructions telling the agent how to update memory at each tier after completing its work.
 
-- **Bash**: `gen_memory_context()`, `gen_memory_update_instructions()`, `_build_launch_args()`, `_gen_sandbox_settings()`, `gen_general_instructions()`
-- **Go**: `prompt.BuildMemoryContext()`, `prompt.BuildMemoryUpdateInstructions()`, `agent.BuildLaunchArgs()`, `agent.GenSandboxSettings()`, `prompt.GenerateGeneralInstructions()`
+- `prompt.BuildMemoryContext()`, `prompt.BuildMemoryUpdateInstructions()`, `agent.BuildLaunchArgs()`, `agent.GenSandboxSettings()`, `prompt.GenerateGeneralInstructions()`
 
 Project memory is also wired into:
 - Launch args — added as `--add-dir` so agents can read/write project memory
@@ -106,24 +107,13 @@ The `crossagent projects` CLI subcommand manages projects:
 - `crossagent projects suggest [--description <text>] [--json]` — suggest matching project
 - `crossagent move <workflow> --project <project>` — move workflow to project
 
-## Bash CLI Conventions
-
-- Pure bash with `set -euo pipefail`, compatible with bash 3.2+ (macOS system bash)
-- Functions prefixed by purpose: `cmd_*` (commands), `gen_*` (prompt generation), `get_*/set_*` (state)
-- No namerefs (`local -n`), no `${,,}` lowercase — these require bash 4.x+
-- Colors via ANSI escape codes, stored in uppercase variables
-- State is stored as simple text files under `~/.crossagent/`
-- JSON output is generated manually; do not add a JSON dependency
-- Static agents stored as config files under `~/.crossagent/agents/`
-- CLI launches use `|| true` to survive non-zero exits (Ctrl+C, errors)
-
 ## Go Conventions
 
 - Zero external dependencies — only the Go standard library
 - Atomic writes via temp file + rename pattern to prevent partial-write corruption
 - File locking (flock) for concurrent `SetConf` calls
 - Embedded templates via `embed.FS` in `internal/prompt/templates/`
-- State files are backward-compatible with the bash CLI (same key=value format)
+- State files use a simple key=value format
 - Tests use `t.TempDir()` with swappable `homeDir` for isolation
 
 ## Web UI Conventions
@@ -138,30 +128,31 @@ The `crossagent projects` CLI subcommand manages projects:
 
 See [docs/architecture.md](docs/architecture.md) for the full decision record.
 
-1. **Core layer** — Go packages (`internal/`) provide state management, agent orchestration, prompt generation, and verdict judging. Bash CLI (`crossagent`) handles CLI commands and orchestration (being incrementally replaced by Go).
+1. **Core layer** — Go packages (`internal/`) provide state management, agent orchestration, prompt generation, and verdict judging. The CLI entry point is `cmd/crossagent/main.go`.
 2. **Integration layer** — `--json` output on `status`, `list`, `phase-cmd`, and `agents`.
 3. **Web UI layer** — Node.js companion in `web/`. Embeds terminals, renders artifacts, manages workflows.
 
 Critical boundaries:
 - Web UI never writes to `~/.crossagent/` directly — it calls `crossagent advance`/`done` for state changes
-- Web UI owns PTY sessions; bash provides launch params via `crossagent phase-cmd <phase> --json`
+- Web UI owns PTY sessions; the Go binary provides launch params via `crossagent phase-cmd <phase> --json`
 - Web UI exposes agent management through CLI `agents` commands, not direct config writes
-- No orchestration logic is duplicated outside the bash core
+- No orchestration logic is duplicated outside the Go core
 
-## When Modifying the Bash CLI
+## When Modifying the CLI
 
-- Keep zero external dependencies — only bash built-ins, coreutils, and the supported agent CLIs
+- Keep zero external dependencies — only the Go standard library
 - Supported agent adapters are `claude` and `codex`
 - Maintain the phase gate pattern: each phase checks prerequisites before running
 - All output files (plan.md, review.md, verify.md) are written by the launched AI, not by crossagent itself
 - The workflow dir is always passed as `--add-dir` to both adapters
-- Prompt templates are the most impactful thing to improve
-- Test changes with `crossagent new test-workflow --repo /tmp/test-repo`
+- Agent adapters: "claude" and "codex" — new adapters require updates in both `agent.go` and `launcher.go`
+- Prompt templates live in `internal/prompt/templates/` as embedded `.md.tmpl` files
+- Verdict parsing must handle case-insensitive matching and various phrasings
+- Run tests with `make test` (runs `go test ./...` then integration tests)
 
 ## When Modifying Go Packages
 
 - Keep zero external dependencies — only the Go standard library
-- Maintain backward compatibility with bash CLI state files (key=value configs, file-per-field)
 - Use atomic writes (`atomicWrite`) for any state mutation
 - Agent adapters: "claude" and "codex" — new adapters require updates in both `agent.go` and `launcher.go`
 - Prompt templates live in `internal/prompt/templates/` as embedded `.md.tmpl` files
