@@ -191,7 +191,7 @@ app.post('/api/done', (_req, res) => {
 
 // API: Create new workflow
 app.post('/api/new', (req, res) => {
-  const { name, repo, addDirs, description } = req.body;
+  const { name, repo, addDirs, description, project } = req.body;
   if (!name || !description) {
     return res.status(400).json({ error: 'name and description required' });
   }
@@ -201,6 +201,7 @@ app.post('/api/new', (req, res) => {
   try {
     const args = ['new', name];
     if (repo) args.push('--repo', repo);
+    if (project && validateName(project)) args.push('--project', project);
     if (addDirs && Array.isArray(addDirs)) {
       addDirs.forEach(d => args.push('--add-dir', d));
     }
@@ -213,6 +214,99 @@ app.post('/api/new', (req, res) => {
     res.json(crossagentJSON('status', '--json'));
   } catch (err) {
     res.status(400).json({ error: err.stderr || err.message });
+  }
+});
+
+// ── Project API ──────────────────────────────────────────────────────────────
+
+// API: List projects
+app.get('/api/projects', (_req, res) => {
+  try {
+    res.json(crossagentJSON('projects', 'list', '--json'));
+  } catch (err) {
+    res.json({ error: err.message, projects: [] });
+  }
+});
+
+// API: Create project
+app.post('/api/projects/new', (req, res) => {
+  const { name } = req.body;
+  if (!name || !validateName(name)) {
+    return res.status(400).json({ error: 'Invalid project name' });
+  }
+  try {
+    crossagent('projects', 'new', name);
+    res.json(crossagentJSON('projects', 'list', '--json'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// API: Delete project
+app.post('/api/projects/delete', (req, res) => {
+  const { name } = req.body;
+  if (!name || !validateName(name)) {
+    return res.status(400).json({ error: 'Invalid project name' });
+  }
+  try {
+    crossagent('projects', 'delete', name);
+    res.json(crossagentJSON('projects', 'list', '--json'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// API: Show project details
+app.get('/api/projects/:name', (req, res) => {
+  const name = req.params.name;
+  if (!validateName(name)) {
+    return res.status(400).json({ error: 'Invalid project name' });
+  }
+  try {
+    res.json(crossagentJSON('projects', 'show', name, '--json'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// API: Rename project
+app.post('/api/projects/rename', (req, res) => {
+  const { old_name, new_name } = req.body;
+  if (!old_name || !validateName(old_name) || !new_name || !validateName(new_name)) {
+    return res.status(400).json({ error: 'Invalid project name(s)' });
+  }
+  try {
+    crossagent('projects', 'rename', old_name, new_name);
+    res.json(crossagentJSON('projects', 'list', '--json'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// API: Move workflow to project
+app.post('/api/move', (req, res) => {
+  const { workflow, project } = req.body;
+  if (!workflow || !validateName(workflow) || !project || !validateName(project)) {
+    return res.status(400).json({ error: 'Invalid workflow or project name' });
+  }
+  try {
+    crossagent('move', workflow, '--project', project);
+    res.json(crossagentJSON('status', '--json'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// API: Suggest project for a description
+app.post('/api/suggest-project', (req, res) => {
+  const { description } = req.body;
+  if (!description || typeof description !== 'string') {
+    return res.status(400).json({ error: 'description required' });
+  }
+  try {
+    res.json(crossagentJSON('projects', 'suggest', '--description', description, '--json'));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

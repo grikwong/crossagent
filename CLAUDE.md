@@ -34,11 +34,21 @@ Workflow state is stored in `~/.crossagent/`:
 ~/.crossagent/
 ├── current                          # Active workflow name
 ├── agents/<name>                    # Custom static agent definitions
-├── memory/                          # Global memory (cross-workflow)
+├── projects/                        # Project definitions
+│   ├── default/                     #   Default project (auto-created)
+│   │   └── memory/
+│   │       ├── project-context.md   #   Project-scoped memory
+│   │       ├── lessons-learned.md   #   Project-scoped lessons
+│   │       └── features/            #   Migrated feature memory files
+│   └── <name>/                      #   User-created projects
+│       └── memory/
+│           ├── project-context.md
+│           └── lessons-learned.md
+├── memory/                          # Global memory (cross-project)
 │   ├── global-context.md            # Patterns, conventions, accumulated knowledge
 │   └── lessons-learned.md           # Retrospective insights
 └── workflows/<name>/
-    ├── config                       # Key-value config (repo, add_dirs, created, phase agent assignments)
+    ├── config                       # Key-value config (repo, add_dirs, created, project, phase agent assignments)
     ├── description                  # Feature description (multi-line)
     ├── phase                        # Current phase (1-4 or "done")
     ├── memory.md                    # Workflow-scoped memory (decisions, findings, notes)
@@ -50,18 +60,39 @@ Workflow state is stored in `~/.crossagent/`:
 
 ## Memory System
 
-Crossagent has a persistent memory system with three layers:
+Crossagent has a persistent memory system with three tiers:
 
 - **Workflow memory** (`memory.md` in the workflow directory) — per-workflow decisions, findings, and session notes. Initialized on `crossagent new` and updated by each phase agent.
-- **Global context** (`~/.crossagent/memory/global-context.md`) — cross-workflow patterns, conventions, and accumulated knowledge. Updated when agents discover reusable insights.
-- **Lessons learned** (`~/.crossagent/memory/lessons-learned.md`) — retrospective insights about process improvements.
+- **Project memory** (`~/.crossagent/projects/<name>/memory/`) — per-project patterns, conventions, domain knowledge, and feature context. Shared across all workflows in a project. May contain a `features/` subdirectory with feature-level memory files.
+- **Global memory** (`~/.crossagent/memory/`) — cross-project patterns, conventions, and accumulated knowledge. Updated when agents discover broadly reusable insights.
 
-Memory flows into prompts via `gen_memory_context()`, which injects workflow memory and (if substantively edited) global context into each phase prompt. Each prompt also includes `gen_memory_update_instructions()` telling the agent how to update memory after completing its work.
+Memory flows into prompts via `gen_memory_context()`, which injects all three tiers (workflow -> project -> global) into each phase prompt. Each prompt also includes `gen_memory_update_instructions()` telling the agent how to update memory at each tier after completing its work.
+
+Project memory is also wired into:
+- `_build_launch_args()` — added as `--add-dir` so agents can read/write project memory
+- `_gen_sandbox_settings()` — added to `allowWrite` so agents have write access
+- `gen_general_instructions()` — listed in workspace directories (section 9) and memory system description (section 8)
 
 The `crossagent memory` CLI subcommand manages memory:
-- `crossagent memory show [--global] [--json]` — display memory content
-- `crossagent memory list [--global] [--json]` — list memory files
-- `crossagent memory edit [--global]` — open memory in editor
+- `crossagent memory show [--global|--project [name]] [--json]` — display memory content
+- `crossagent memory list [--global|--project [name]] [--json]` — list memory files
+- `crossagent memory edit [--global|--project [name]]` — open memory in editor
+
+## Projects
+
+Workflows are grouped under projects. Each workflow has exactly one parent project (defaults to `default`). Projects provide:
+- Scoped memory shared across the project's workflows
+- Organization of related workflows
+- Auto-suggestion of the best project for new workflows
+
+The `crossagent projects` CLI subcommand manages projects:
+- `crossagent projects list [--json]` — list all projects
+- `crossagent projects new <name>` — create a new project
+- `crossagent projects delete <name>` — delete (moves workflows to default)
+- `crossagent projects show <name> [--json]` — show project details
+- `crossagent projects rename <old> <new>` — rename a project
+- `crossagent projects suggest [--description <text>] [--json]` — suggest matching project
+- `crossagent move <workflow> --project <project>` — move workflow to project
 
 ## Bash CLI Conventions
 

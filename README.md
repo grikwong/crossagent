@@ -27,9 +27,9 @@ Most AI coding tools use one model for everything. Crossagent breaks that patter
 
 Crossagent runs on top of CLI tools that use **subscription-based plans** (Claude Code via Claude Pro/Max, Codex CLI via ChatGPT Pro), not per-token API billing. No surprise invoices, no cost anxiety mid-workflow. You know what you're paying before you start.
 
-### Auto-improving multi-domain memory
+### Auto-improving three-tier memory
 
-Every workflow builds knowledge. Crossagent maintains **persistent memory across projects and repositories** — codebase patterns, conventions, lessons learned — and feeds it back into future workflows automatically. In multi-project, multi-repo setups, the tool gets smarter with every run instead of starting from zero each time.
+Every workflow builds knowledge. Crossagent maintains **persistent memory at three scopes** — global (cross-project), project (per-project patterns and features), and workflow (per-task decisions) — and feeds it back into future workflows automatically. In multi-project, multi-repo setups, the tool gets smarter with every run instead of starting from zero each time.
 
 ### Autonomous execution with sandboxed safety
 
@@ -142,16 +142,31 @@ crossagent verify [--force]
 crossagent next                     # Run whatever comes next
 ```
 
+### Projects
+
+```bash
+crossagent projects list [--json]
+crossagent projects new <name>
+crossagent projects delete <name>
+crossagent projects show <name> [--json]
+crossagent projects rename <old> <new>
+crossagent projects suggest [--description <text>] [--json]
+crossagent move <workflow> --project <project>
+```
+
+Workflows are grouped under projects. Each workflow belongs to exactly one project (defaults to `default`). Projects provide scoped memory shared across related workflows. When creating a workflow under `default`, Crossagent can suggest a better-matching project based on the description.
+
 ### Memory
 
 ```bash
-crossagent memory show [--global] [--json]
-crossagent memory list [--global] [--json]
-crossagent memory edit [--global]
+crossagent memory show [--global|--project [name]] [--json]
+crossagent memory list [--global|--project [name]] [--json]
+crossagent memory edit [--global|--project [name]]
 ```
 
-- Without `--global`, operates on the current workflow's `memory.md`
+- Without flags, operates on the current workflow's `memory.md`
 - With `--global`, operates on `~/.crossagent/memory/` (global context and lessons learned)
+- With `--project`, operates on project memory (defaults to current workflow's project)
 - `edit --global` opens `global-context.md` in your `$EDITOR`
 
 ### Navigation and recovery
@@ -224,11 +239,21 @@ All assigned agents get access to all specified directories.
 ~/.crossagent/
 ├── current
 ├── agents/<name>
+├── projects/                    # Project hierarchy
+│   ├── default/
+│   │   └── memory/
+│   │       ├── project-context.md
+│   │       ├── lessons-learned.md
+│   │       └── features/        # Feature-level memory
+│   └── <name>/
+│       └── memory/
+│           ├── project-context.md
+│           └── lessons-learned.md
 ├── memory/
-│   ├── global-context.md       # Cross-workflow patterns & conventions
+│   ├── global-context.md       # Cross-project patterns & conventions
 │   └── lessons-learned.md      # Retrospective insights
 └── workflows/<name>/
-    ├── config
+    ├── config                   # Includes project=<name>
     ├── description
     ├── phase
     ├── memory.md                # Workflow-scoped memory

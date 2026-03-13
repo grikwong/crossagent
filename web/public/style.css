@@ -388,6 +388,72 @@ input:focus, textarea:focus, select:focus {
 .guide-banner.guide-error { color: var(--red); }
 .guide-banner.guide-success { color: var(--green); }
 
+/* ── Project Management ─────────────────────────────────────────────────── */
+
+.modal-wide { width: 500px; }
+
+.projects-list { max-height: 300px; overflow-y: auto; margin-bottom: 12px; }
+
+.project-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+.project-row:last-child { border-bottom: none; }
+
+.project-name { flex: 1; font-weight: 600; font-size: 13px; }
+.project-count { font-size: 11px; color: var(--text-muted); }
+.project-actions { display: flex; gap: 4px; }
+
+.projects-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.projects-actions input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* ── Project Suggestion Modal ───────────────────────────────────────────── */
+
+.suggest-text { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
+
+.suggest-project-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.suggest-name {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.suggest-matched {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.suggest-question {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
 .muted { color: var(--text-muted); }

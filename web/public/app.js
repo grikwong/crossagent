@@ -13,6 +13,8 @@ let pendingOutputFile = null;   // Track expected output file for auto-advance
 let pendingPhaseName = null;    // Track which phase is running
 let outputPollTimer = null;     // Poll for output file while session runs
 let retryLoopActive = false;    // Whether we're in an autonomous retry loop
+let projectsData = null;       // Cached projects list
+let selectedProjectFilter = ''; // Current project filter in topbar
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
@@ -58,6 +60,193 @@ async function fetchList() {
   }
 }
 
+async function fetchProjects() {
+  try {
+    const data = await api('/projects');
+    projectsData = data;
+    renderProjectSelect(data);
+    return data;
+  } catch {
+    projectsData = { projects: [] };
+    renderProjectSelect({ projects: [] });
+    return { projects: [] };
+  }
+}
+
+function renderProjectSelect(data) {
+  const sel = document.getElementById('project-select');
+  const oldVal = sel.value;
+  sel.innerHTML = '<option value="">All Projects</option>';
+  if (data.projects && data.projects.length > 0) {
+    data.projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = `${p.name} (${p.workflow_count})`;
+      sel.appendChild(opt);
+    });
+  }
+  sel.value = oldVal || '';
+
+  // Also update the new-workflow project dropdown
+  const newSel = document.getElementById('new-project');
+  if (newSel) {
+    newSel.innerHTML = '';
+    if (data.projects) {
+      data.projects.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name;
+        if (p.name === 'default') opt.selected = true;
+        newSel.appendChild(opt);
+      });
+    }
+  }
+}
+
+async function createProject(name) {
+  try {
+    const data = await api('/projects/new', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    await fetchProjects();
+    renderProjectManager();
+  } catch (err) {
+    alert(err.message || 'Failed to create project');
+  }
+}
+
+async function deleteProject(name) {
+  if (!confirm(`Delete project "${name}"? Workflows will be moved to "default".`)) return;
+  try {
+    const data = await api('/projects/delete', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    await fetchProjects();
+    await fetchList();
+    await fetchStatus();
+    renderProjectManager();
+  } catch (err) {
+    alert(err.message || 'Failed to delete project');
+  }
+}
+
+async function renameProject(oldName) {
+  const newName = prompt(`Rename project "${oldName}" to:`);
+  if (!newName) return;
+  try {
+    const data = await api('/projects/rename', {
+      method: 'POST',
+      body: JSON.stringify({ old_name: oldName, new_name: newName }),
+    });
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    await fetchProjects();
+    await fetchList();
+    await fetchStatus();
+    renderProjectManager();
+  } catch (err) {
+    alert(err.message || 'Failed to rename project');
+  }
+}
+
+async function moveWorkflow(workflow, project) {
+  try {
+    const data = await api('/move', {
+      method: 'POST',
+      body: JSON.stringify({ workflow, project }),
+    });
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    await fetchProjects();
+    await fetchList();
+    await fetchStatus();
+  } catch (err) {
+    alert(err.message || 'Failed to move workflow');
+  }
+}
+
+function renderProjectManager() {
+  const el = document.getElementById('projects-list');
+  if (!projectsData || !projectsData.projects || projectsData.projects.length === 0) {
+    el.innerHTML = '<p class="muted">No projects</p>';
+    return;
+  }
+  let html = '';
+  projectsData.projects.forEach(p => {
+    const isDefault = p.name === 'default';
+    html += `<div class="project-row">
+      <span class="project-name">${esc(p.name)}</span>
+      <span class="project-count">${p.workflow_count} workflow(s)</span>
+      <span class="project-actions">
+        ${isDefault ? '' : `<button class="btn-icon project-rename" data-name="${esc(p.name)}" title="Rename">R</button>`}
+        ${isDefault ? '' : `<button class="btn-icon project-delete" data-name="${esc(p.name)}" title="Delete">\u00d7</button>`}
+      </span>
+    </div>`;
+  });
+  el.innerHTML = html;
+
+  // Bind events
+  el.querySelectorAll('.project-rename').forEach(btn => {
+    btn.addEventListener('click', () => renameProject(btn.dataset.name));
+  });
+  el.querySelectorAll('.project-delete').forEach(btn => {
+    btn.addEventListener('click', () => deleteProject(btn.dataset.name));
+  });
+}
+
+async function suggestProject(workflowName, description) {
+  try {
+    const data = await api('/suggest-project', {
+      method: 'POST',
+      body: JSON.stringify({ description }),
+    });
+    if (data.suggested_project) {
+      // Show suggestion modal
+      document.getElementById('suggest-project-name').textContent = data.suggested_project;
+      document.getElementById('suggest-matched').textContent = 'Matched: ' + (data.matched_terms || '');
+      document.getElementById('suggest-project-label').textContent = data.suggested_project;
+      document.getElementById('suggest-modal').classList.remove('hidden');
+
+      // Set up move handler
+      const moveBtn = document.getElementById('suggest-move');
+      const keepBtn = document.getElementById('suggest-keep');
+      const modal = document.getElementById('suggest-modal');
+
+      const cleanup = () => {
+        modal.classList.add('hidden');
+        moveBtn.replaceWith(moveBtn.cloneNode(true));
+        keepBtn.replaceWith(keepBtn.cloneNode(true));
+      };
+
+      moveBtn.addEventListener('click', async () => {
+        cleanup();
+        await moveWorkflow(workflowName, data.suggested_project);
+        term.writeln(`\x1b[32m  Moved to project "${data.suggested_project}"\x1b[0m\r\n`);
+      }, { once: true });
+
+      keepBtn.addEventListener('click', () => {
+        cleanup();
+      }, { once: true });
+    }
+  } catch {
+    // Silent — suggestion is non-blocking
+  }
+}
+
 // ── Render ──────────────────────────────────────────────────────────────────
 
 function renderNoWorkflow() {
@@ -86,10 +275,20 @@ function renderWorkflowSelect(data) {
     sel.innerHTML = '<option value="">No workflows</option>';
     return;
   }
-  data.workflows.forEach(wf => {
+  const filter = selectedProjectFilter;
+  let filtered = data.workflows;
+  if (filter) {
+    filtered = data.workflows.filter(wf => wf.project === filter);
+  }
+  if (filtered.length === 0) {
+    sel.innerHTML = '<option value="">No workflows</option>';
+    return;
+  }
+  filtered.forEach(wf => {
     const opt = document.createElement('option');
     opt.value = wf.name;
-    opt.textContent = `${wf.name} (${wf.phase_label})`;
+    const projectLabel = wf.project && wf.project !== 'default' ? ` [${wf.project}]` : '';
+    opt.textContent = `${wf.name} (${wf.phase_label})${projectLabel}`;
     opt.selected = wf.active;
     sel.appendChild(opt);
   });
@@ -190,7 +389,9 @@ function renderInfo() {
   if (state.retry_count > 0) {
     retryInfo = `<div class="info-row"><span class="info-label">Retry</span><span class="info-value">${state.retry_count}/${state.max_retries}</span></div>`;
   }
+  const projectInfo = state.project ? `<div class="info-row"><span class="info-label">Project</span><span class="info-value">${esc(state.project)}</span></div>` : '';
   el.innerHTML = `
+    ${projectInfo}
     <div class="info-row"><span class="info-label">Repo</span><span class="info-value">${esc(state.repo)}</span></div>
     <div class="info-row"><span class="info-label">Phase</span><span class="info-value">${esc(state.phase_label)}</span></div>
     <div class="info-row"><span class="info-label">Created</span><span class="info-value">${esc(state.created)}</span></div>
@@ -784,11 +985,11 @@ async function removeDirectory(dirPath) {
   }
 }
 
-async function createWorkflow(name, repo, description, addDirs) {
+async function createWorkflow(name, repo, description, addDirs, project) {
   try {
     const data = await api('/new', {
       method: 'POST',
-      body: JSON.stringify({ name, repo, description, addDirs }),
+      body: JSON.stringify({ name, repo, description, addDirs, project }),
     });
     if (data.error) {
       alert(data.error);
@@ -797,8 +998,14 @@ async function createWorkflow(name, repo, description, addDirs) {
     term.clear();
     term.writeln(`\x1b[32m  Workflow "${name}" created.\x1b[0m`);
     term.writeln(`\x1b[2m  Click "Run Plan" to start the planning phase.\x1b[0m\r\n`);
+    await fetchProjects();
     await fetchList();
     await fetchStatus();
+
+    // Auto-suggest project if created under "default"
+    if (!project || project === 'default') {
+      await suggestProject(name, description);
+    }
   } catch (err) {
     alert(err.message || 'Failed to create workflow');
   }
@@ -878,7 +1085,8 @@ function bindEvents() {
     el.addEventListener('click', () => loadArtifact(el.dataset.artifact));
   });
 
-  document.getElementById('new-btn').addEventListener('click', () => {
+  document.getElementById('new-btn').addEventListener('click', async () => {
+    await fetchProjects();
     document.getElementById('new-modal').classList.remove('hidden');
     document.getElementById('new-name').focus();
   });
@@ -891,6 +1099,7 @@ function bindEvents() {
     const repo = document.getElementById('new-repo').value.trim();
     const desc = document.getElementById('new-desc').value.trim();
     const dirsText = document.getElementById('new-dirs').value.trim();
+    const project = document.getElementById('new-project').value;
     if (!name || !desc) return;
 
     // Parse additional directories (one per line, skip empties)
@@ -898,10 +1107,33 @@ function bindEvents() {
       ? dirsText.split('\n').map(d => d.trim()).filter(Boolean)
       : undefined;
 
-    await createWorkflow(name, repo || undefined, desc, addDirs);
+    await createWorkflow(name, repo || undefined, desc, addDirs, project || undefined);
     document.getElementById('new-modal').classList.add('hidden');
     document.getElementById('new-form').reset();
   });
+
+  // Project filter
+  document.getElementById('project-select').addEventListener('change', async (e) => {
+    selectedProjectFilter = e.target.value;
+    await fetchList();
+  });
+
+  // Manage Projects
+  document.getElementById('manage-projects-btn').addEventListener('click', async () => {
+    await fetchProjects();
+    renderProjectManager();
+    document.getElementById('projects-modal').classList.remove('hidden');
+  });
+  document.getElementById('projects-close').addEventListener('click', () => {
+    document.getElementById('projects-modal').classList.add('hidden');
+  });
+  document.getElementById('projects-new-btn').addEventListener('click', async () => {
+    const name = document.getElementById('projects-new-name').value.trim();
+    if (!name) return;
+    await createProject(name);
+    document.getElementById('projects-new-name').value = '';
+  });
+
 
   // Add Directory modal
   document.getElementById('add-dir-btn').addEventListener('click', () => {
@@ -946,6 +1178,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initTerminal();
   connectWS();
   bindEvents();
+  await fetchProjects();
   await fetchList();
   await fetchStatus();
 });
