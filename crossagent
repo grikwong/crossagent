@@ -485,9 +485,17 @@ _gen_sandbox_settings() {
     local wf_dir=$1 repo=$2 add_dirs=${3:-}
     local settings_file="$wf_dir/prompts/.sandbox-settings.json"
 
-    # Build allowWrite array: workflow dir + repo + global memory dir + additional dirs
+    # Build allowWrite array: workflow dir + repo + global memory dir + project memory dir + additional dirs
     # Paths use // prefix for absolute paths per Claude sandbox convention
     local allow_write="\"/${wf_dir}\",\"/${repo}\",\"/${MEMORY_DIR}\""
+
+    # Add project memory directory
+    local project
+    project=$(get_conf "$wf_dir" "project")
+    if [[ -n "$project" && -d "$PROJECTS_DIR/$project/memory" ]]; then
+        allow_write+=",\"/$PROJECTS_DIR/$project/memory\""
+    fi
+
     if [[ -n "$add_dirs" ]]; then
         local _dirs _dir
         IFS=',' read -ra _dirs <<< "$add_dirs"
@@ -524,6 +532,14 @@ SETTINGS_EOF
 _build_launch_args() {
     local wf_dir=$1 add_dirs=$2
     LAUNCH_ARGS=(--add-dir "$wf_dir" --add-dir "$MEMORY_DIR")
+
+    # Add project memory directory
+    local project
+    project=$(get_conf "$wf_dir" "project")
+    if [[ -n "$project" && -d "$PROJECTS_DIR/$project/memory" ]]; then
+        LAUNCH_ARGS+=(--add-dir "$PROJECTS_DIR/$project/memory")
+    fi
+
     if [[ -n "$add_dirs" ]]; then
         local _dirs _dir
         IFS=',' read -ra _dirs <<< "$add_dirs"
@@ -691,13 +707,17 @@ ambiguous pronouns like "the function" without naming it.
 - Do not refactor code outside the scope of the current task
 ## 8. Memory System
 
-Crossagent maintains a persistent memory system to accumulate knowledge
-across phases and workflows:
+Crossagent maintains a persistent memory system with three tiers to
+accumulate knowledge across phases and workflows:
 
 - **Workflow memory** (\`memory.md\` in the workflow directory) — tracks
   decisions, findings, and session notes for this specific workflow.
   All phase agents should update this after completing their work.
-- **Global memory** (\`~/.crossagent/memory/\`) — captures cross-workflow
+- **Project memory** (\`~/.crossagent/projects/<name>/memory/\`) — tracks
+  project-specific patterns, conventions, and feature context shared
+  across all workflows in this project. Update when you discover
+  knowledge relevant to the project but not broadly reusable.
+- **Global memory** (\`~/.crossagent/memory/\`) — captures cross-project
   patterns, conventions, and lessons learned. Update only when you
   discover genuinely reusable knowledge.
 
@@ -706,6 +726,14 @@ Your phase prompt includes specific memory update instructions.
 GENERAL_EOF
 
     # ── Dynamic section: workspace directories (interpolated) ──
+    # Resolve project for workspace directories
+    local project proj_mem_dir
+    project=$(get_conf "$d" "project")
+    proj_mem_dir=""
+    if [[ -n "$project" && -d "$PROJECTS_DIR/$project/memory" ]]; then
+        proj_mem_dir="$PROJECTS_DIR/$project/memory"
+    fi
+
     cat >> "$d/prompts/general.md" <<DIRS_EOF
 
 ## 9. Workspace Directories
@@ -719,6 +747,11 @@ For **Claude Code**, run the \`/add-dir\` slash command for each directory:
 /add-dir ${repo}
 /add-dir ${MEMORY_DIR}
 DIRS_EOF
+
+    # Add project memory directory
+    if [[ -n "$proj_mem_dir" ]]; then
+        echo "/add-dir ${proj_mem_dir}" >> "$d/prompts/general.md"
+    fi
 
     # Append each additional directory
     if [[ -n "$add_dirs" ]]; then
@@ -744,6 +777,11 @@ DIRS_TAIL
 - **Primary repository**: \`${repo}\` — the main codebase
 - **Global memory**: \`${MEMORY_DIR}\` — cross-workflow patterns and lessons learned
 DIRS_LIST
+
+    # Add project memory to directory listing
+    if [[ -n "$proj_mem_dir" ]]; then
+        echo "- **Project memory**: \`${proj_mem_dir}\` — project-specific patterns, features, and conventions" >> "$d/prompts/general.md"
+    fi
 
     if [[ -n "$add_dirs" ]]; then
         local _dirs _dir
@@ -782,6 +820,44 @@ $(cat "$d/memory.md")
 "
     fi
 
+    # Include project memory if it exists and has substantive content
+    local project proj_mem_dir
+    project=$(get_conf "$d" "project")
+    if [[ -n "$project" ]]; then
+        proj_mem_dir="$PROJECTS_DIR/$project/memory"
+        if [[ -d "$proj_mem_dir" ]]; then
+            local proj_ctx="" has_proj_content=false
+            # Scan all files under project memory (including features/ subdirectory)
+            while IFS= read -r -d '' pfile; do
+                [[ -f "$pfile" ]] || continue
+                local pcontent
+                pcontent=$(cat "$pfile")
+                # Skip files with only default template content
+                local plines
+                plines=$(echo "$pcontent" | grep -cv '^\s*$' 2>/dev/null || true)
+                if [[ "$plines" -gt 5 ]]; then
+                    has_proj_content=true
+                    proj_ctx+="### $(basename "$pfile")
+${pcontent}
+
+"
+                fi
+            done < <(find "$proj_mem_dir" -name '*.md' -print0 2>/dev/null)
+
+            if $has_proj_content; then
+                ctx+="## Project Memory (${project})
+
+The following is accumulated knowledge specific to the \"${project}\" project.
+Reference it for project-specific patterns, conventions, and domain knowledge.
+
+<project-memory>
+${proj_ctx}</project-memory>
+
+"
+            fi
+        fi
+    fi
+
     # Include global context if it has been edited beyond the default template
     # (check for Changelog entries — default template has an empty table)
     if [[ -f "$mem_dir/global-context.md" ]]; then
@@ -808,6 +884,13 @@ $(cat "$mem_dir/global-context.md")
 gen_memory_update_instructions() {
     local d=$1 phase_name=$2
     local mem_dir="$CROSSAGENT_HOME/memory"
+    local project proj_mem_dir
+    project=$(get_conf "$d" "project")
+    proj_mem_dir=""
+    if [[ -n "$project" ]]; then
+        proj_mem_dir="$PROJECTS_DIR/$project/memory"
+    fi
+
     cat <<EOF
 
 ## Memory Update Instructions
@@ -819,13 +902,33 @@ Update \`${d}/memory.md\` with:
 - Decisions made during this phase (add to Decisions Log table)
 - Key findings or discoveries (add to Key Findings)
 - Session notes summarizing what was done
+EOF
 
-### Global Context (IF new patterns discovered)
+    if [[ -n "$proj_mem_dir" ]]; then
+        cat <<EOF
+
+### Project Memory (IF project-relevant patterns discovered)
+Update files under \`${proj_mem_dir}/\` with:
+- Patterns specific to this project's codebase -> \`${proj_mem_dir}/project-context.md\`
+- Conventions that apply across this project's workflows -> \`${proj_mem_dir}/project-context.md\`
+- Domain knowledge relevant to this project -> \`${proj_mem_dir}/project-context.md\`
+- Project-specific retrospective insights -> \`${proj_mem_dir}/lessons-learned.md\`
+- Feature-level context (if applicable) -> \`${proj_mem_dir}/features/<feature-name>.md\`
+
+Do NOT duplicate information that belongs in global memory.
+Project memory is for patterns/knowledge specific to the "${project}" project.
+EOF
+    fi
+
+    cat <<EOF
+
+### Global Context (IF new cross-project patterns discovered)
 If you discovered reusable patterns, conventions, or pitfalls that would
-benefit future workflows, append them to:
+benefit future workflows across projects, append them to:
 \`${mem_dir}/global-context.md\`
 
-Only add genuinely new, reusable knowledge — not workflow-specific details.
+Only add genuinely new, reusable knowledge — not workflow-specific or
+project-specific details.
 Add a Changelog entry with today's date and the source workflow name.
 
 ### Lessons Learned (IF issues encountered)
@@ -2719,21 +2822,77 @@ cmd_memory() {
     local subcmd="${1:-show}"
     shift 2>/dev/null || true
 
-    local global_flag=false json_mode=false
+    local global_flag=false json_mode=false project_flag=false project_name=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --global)  global_flag=true; shift ;;
+            --project)
+                project_flag=true
+                # Next arg may be a project name (if not another flag)
+                if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+                    project_name="$2"; shift 2
+                else
+                    shift
+                fi
+                ;;
             --json)    json_mode=true; shift ;;
-            -h|--help) echo "Usage: crossagent memory [show|list] [--global] [--json]"; exit 0 ;;
+            -h|--help) echo "Usage: crossagent memory [show|list|edit] [--global|--project [name]] [--json]"; exit 0 ;;
             *)         shift ;;
         esac
     done
 
     ensure_dirs
 
+    # Resolve project memory directory if --project was used
+    if $project_flag; then
+        if [[ -z "$project_name" ]]; then
+            # Default to current workflow's project
+            local name d
+            name=$(require_workflow); d=$(wf_dir "$name")
+            project_name=$(get_conf "$d" "project")
+            [[ -z "$project_name" ]] && project_name="default"
+        fi
+        require_project "$project_name"
+        local proj_mem_dir="$PROJECTS_DIR/$project_name/memory"
+    fi
+
     case "$subcmd" in
         show)
-            if $global_flag; then
+            if $project_flag; then
+                if $json_mode; then
+                    local files="{" first_file=true
+                    for f in "$proj_mem_dir"/*.md "$proj_mem_dir"/**/*.md; do
+                        [[ -f "$f" ]] || continue
+                        local relname content
+                        relname="${f#$proj_mem_dir/}"
+                        content=$(cat "$f")
+                        $first_file || files+=","
+                        files+="$(printf '"%s":{"path":"%s","content":"%s"}' "$(json_escape "$relname")" "$(json_escape "$f")" "$(json_escape "$content")")"
+                        first_file=false
+                    done
+                    files+="}"
+                    printf '{"type":"project","name":"%s","files":%s}' "$(json_escape "$project_name")" "$files"
+                    echo ""
+                else
+                    echo ""
+                    echo -e "  ${BOLD}Project Memory: ${project_name}${NC}"
+                    separator
+                    local found_files=false
+                    while IFS= read -r -d '' f; do
+                        [[ -f "$f" ]] || continue
+                        found_files=true
+                        echo ""
+                        echo -e "  ${BOLD}${f#$proj_mem_dir/}${NC}"
+                        echo -e "  ${DIM}${f}${NC}"
+                        echo ""
+                        sed 's/^/    /' "$f"
+                        echo ""
+                        separator
+                    done < <(find "$proj_mem_dir" -name '*.md' -print0 2>/dev/null)
+                    $found_files || echo -e "  ${DIM}No memory files.${NC}"
+                    echo ""
+                fi
+            elif $global_flag; then
                 if $json_mode; then
                     local gc_content="" ll_content=""
                     [[ -f "$MEMORY_DIR/global-context.md" ]] && gc_content=$(cat "$MEMORY_DIR/global-context.md")
@@ -2789,7 +2948,38 @@ cmd_memory() {
             fi
             ;;
         list)
-            if $global_flag; then
+            if $project_flag; then
+                if $json_mode; then
+                    local files="[" first=true
+                    while IFS= read -r -d '' f; do
+                        [[ -f "$f" ]] || continue
+                        $first || files+=","
+                        local relname lines
+                        relname="${f#$proj_mem_dir/}"
+                        lines=$(wc -l < "$f" | tr -d ' ')
+                        files+="$(printf '{"name":"%s","path":"%s","lines":%s}' "$(json_escape "$relname")" "$(json_escape "$f")" "$lines")"
+                        first=false
+                    done < <(find "$proj_mem_dir" -name '*.md' -print0 2>/dev/null)
+                    files+="]"
+                    printf '{"type":"project","name":"%s","files":%s}' "$(json_escape "$project_name")" "$files"
+                    echo ""
+                else
+                    echo ""
+                    echo -e "  ${BOLD}Project Memory Files: ${project_name}${NC}"
+                    separator
+                    local found=false
+                    while IFS= read -r -d '' f; do
+                        [[ -f "$f" ]] || continue
+                        found=true
+                        local relname lines
+                        relname="${f#$proj_mem_dir/}"
+                        lines=$(wc -l < "$f" | tr -d ' ')
+                        echo -e "  ${relname}  ${DIM}(${lines} lines)${NC}"
+                    done < <(find "$proj_mem_dir" -name '*.md' -print0 2>/dev/null)
+                    $found || echo -e "  ${DIM}(none)${NC}"
+                    echo ""
+                fi
+            elif $global_flag; then
                 if $json_mode; then
                     local files="[" first=true
                     for f in "$MEMORY_DIR"/*.md; do
@@ -2844,7 +3034,9 @@ cmd_memory() {
             fi
             ;;
         edit)
-            if $global_flag; then
+            if $project_flag; then
+                "${EDITOR:-vi}" "$proj_mem_dir/project-context.md"
+            elif $global_flag; then
                 "${EDITOR:-vi}" "$MEMORY_DIR/global-context.md"
             else
                 local name d
@@ -3035,6 +3227,111 @@ cmd_projects() {
             [[ $rewritten -gt 0 ]] && info "Updated ${rewritten} workflow config(s)."
             ;;
 
+        suggest)
+            local description="" json_mode=false
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --description) require_option_arg "$1" "${2:-}"; description="$2"; shift 2 ;;
+                    --json)        json_mode=true; shift ;;
+                    -*)            die "Unknown option: $1" ;;
+                    *)             shift ;;
+                esac
+            done
+            ensure_dirs
+
+            # Fall back to current workflow description if no --description given
+            if [[ -z "$description" ]]; then
+                local name d
+                name=$(require_workflow); d=$(wf_dir "$name")
+                description=$(get_description "$d")
+            fi
+            [[ -z "$description" ]] && die "No description provided. Use --description <text>"
+
+            # Score each non-default project
+            local best_project="" best_score=0 best_terms=""
+            for dir in "$PROJECTS_DIR"/*/; do
+                [[ -d "$dir" ]] || continue
+                local pname
+                pname=$(basename "$dir")
+                [[ "$pname" == "default" ]] && continue
+
+                local score=0 matched=""
+                local mem_d="$PROJECTS_DIR/$pname/memory"
+                [[ -d "$mem_d" ]] || continue
+
+                # Collect all text from project memory files
+                local corpus=""
+                while IFS= read -r -d '' f; do
+                    [[ -f "$f" ]] || continue
+                    corpus+="$(cat "$f") "
+                done < <(find "$mem_d" -name '*.md' -print0 2>/dev/null)
+
+                [[ -z "$corpus" ]] && continue
+
+                # Extract key terms from corpus and match against description
+                # Match repo paths, tech terms, domain terms
+                local desc_lower
+                desc_lower=$(echo "$description" | tr '[:upper:]' '[:lower:]')
+                local corpus_lower
+                corpus_lower=$(echo "$corpus" | tr '[:upper:]' '[:lower:]')
+
+                # Check for repo path fragments
+                local repo_paths
+                repo_paths=$(echo "$corpus" | grep -oE '/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+' | sort -u 2>/dev/null || true)
+                for rp in $repo_paths; do
+                    local rp_base
+                    rp_base=$(basename "$rp")
+                    if echo "$desc_lower" | grep -qi "$rp_base" 2>/dev/null; then
+                        ((score += 15)) || true
+                        matched="${matched:+$matched, }$rp_base"
+                    fi
+                done
+
+                # Check for common tech/domain keywords from corpus
+                local keywords
+                keywords=$(echo "$corpus_lower" | grep -oE '\b(grpc|proto|vendor|admin|portal|customer|event.sourc|cqrs|postgresql|kurrentdb|sendgrid|dart|flutter)\b' | sort -u 2>/dev/null || true)
+                for kw in $keywords; do
+                    if echo "$desc_lower" | grep -qi "$kw" 2>/dev/null; then
+                        ((score += 10)) || true
+                        matched="${matched:+$matched, }$kw"
+                    fi
+                done
+
+                # Check project name itself
+                if echo "$desc_lower" | grep -qi "$pname" 2>/dev/null; then
+                    ((score += 20)) || true
+                    matched="${matched:+$matched, }$pname"
+                fi
+
+                if [[ $score -gt $best_score ]]; then
+                    best_score=$score
+                    best_project="$pname"
+                    best_terms="$matched"
+                fi
+            done
+
+            # Threshold: only suggest if score >= 30
+            if [[ $best_score -ge 30 && -n "$best_project" ]]; then
+                if $json_mode; then
+                    printf '{"suggested_project":"%s","score":%d,"matched_terms":"%s"}' \
+                        "$(json_escape "$best_project")" "$best_score" "$(json_escape "$best_terms")"
+                    echo ""
+                else
+                    echo ""
+                    info "Suggested project: ${BOLD}${best_project}${NC}"
+                    info "Score: ${best_score}"
+                    info "Matched: ${best_terms}"
+                    echo ""
+                fi
+            else
+                if $json_mode; then
+                    echo '{"suggested_project":null,"score":0,"matched_terms":""}'
+                else
+                    info "No project suggestion (no strong match found)."
+                fi
+            fi
+            ;;
+
         help|--help|-h)
             cat <<'USAGE'
 Usage:
@@ -3043,6 +3340,7 @@ Usage:
   crossagent projects delete <name>
   crossagent projects show <name> [--json]
   crossagent projects rename <old> <new>
+  crossagent projects suggest [--description <text>] [--json]
 USAGE
             ;;
 
@@ -3160,6 +3458,9 @@ usage() {
     projects delete <name> Delete a project (moves workflows to default)
     projects show <name>  Show project details and workflows
     projects rename <o> <n> Rename a project
+    projects suggest      Suggest a project for a description
+      --description <text>  Description to match against
+      --json                JSON output
     move <wf> --project <p> Move a workflow to a different project
 
   REPOSITORIES
@@ -3187,10 +3488,13 @@ usage() {
   MEMORY
     memory show           Show workflow memory (default)
     memory show --global  Show global memory files
+    memory show --project [name] Show project memory files
     memory list           List memory files for current workflow
     memory list --global  List global memory files
+    memory list --project [name] List project memory files
     memory edit           Edit workflow memory in $EDITOR
     memory edit --global  Edit global context in $EDITOR
+    memory edit --project [name] Edit project context in $EDITOR
       --json              JSON output for show/list
 
   UTILITIES

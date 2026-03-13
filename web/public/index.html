@@ -16,10 +16,14 @@
         <span class="version">v1.0.0</span>
       </div>
       <div class="topbar-center">
+        <select id="project-select" title="Filter by project">
+          <option value="">All Projects</option>
+        </select>
         <select id="workflow-select">
           <option value="">No workflows</option>
         </select>
         <button id="new-btn" class="btn btn-sm" title="New Workflow">+</button>
+        <button id="manage-projects-btn" class="btn btn-sm" title="Manage Projects">Projects</button>
       </div>
       <div class="topbar-right">
         <span id="connection-status" class="status-dot" title="Disconnected"></span>
@@ -147,6 +151,11 @@
         <label>Name
           <input type="text" id="new-name" placeholder="feature-name" required>
         </label>
+        <label>Project
+          <select id="new-project">
+            <option value="default">default</option>
+          </select>
+        </label>
         <label>Repository Path
           <input type="text" id="new-repo" placeholder="~/projects/my-app">
         </label>
@@ -178,6 +187,40 @@
           <button type="submit" class="btn btn-primary btn-sm">Add</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Manage Projects Modal -->
+  <div id="projects-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content modal-wide">
+      <h2>Manage Projects</h2>
+      <div id="projects-list" class="projects-list"></div>
+      <div class="projects-actions">
+        <input type="text" id="projects-new-name" placeholder="New project name">
+        <button id="projects-new-btn" class="btn btn-primary btn-sm">Create</button>
+      </div>
+      <div class="modal-actions">
+        <button id="projects-close" class="btn btn-sm">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project Suggestion Modal -->
+  <div id="suggest-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>Project Suggestion</h2>
+      <p class="suggest-text">This workflow looks like it belongs to:</p>
+      <div class="suggest-project-card">
+        <span id="suggest-project-name" class="suggest-name"></span>
+        <span id="suggest-matched" class="suggest-matched"></span>
+      </div>
+      <p class="suggest-question">Move this workflow to "<span id="suggest-project-label"></span>"?</p>
+      <div class="modal-actions">
+        <button id="suggest-keep" class="btn btn-sm">Keep in Default</button>
+        <button id="suggest-move" class="btn btn-primary btn-sm">Move</button>
+      </div>
     </div>
   </div>
 
