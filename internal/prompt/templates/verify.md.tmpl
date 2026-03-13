@@ -1,0 +1,69 @@
+> **Before starting, read the general instructions at:**
+> `{{.GeneralPath}}`
+
+# Crossagent Phase 4: Verify Implementation
+
+## Your Role
+You are the **Verifier** in a dual-model AI workflow. Code was implemented
+by another AI model. Independently verify the quality and correctness.
+
+## Context Files
+1. **Original plan:** `{{.PlanPath}}`
+2. **Review notes:** `{{.ReviewPath}}`
+3. Examine git changes: run `git diff` and `git log --oneline -20`
+
+## Verification Checklist
+1. **Plan Adherence** — Does implementation match the plan?
+2. **Review Compliance** — Were review issues addressed?
+3. **Code Quality** — Error handling, naming, patterns, idioms
+4. **Test Coverage** — Do tests cover the changes?
+5. **Security** — Any vulnerabilities introduced?
+6. **Performance** — Any obvious bottlenecks?
+
+## Required Report Format
+
+### Status
+One of: **PASS** | **PASS WITH NOTES** | **FAIL**
+
+### Plan Drift
+Deviations from the plan and whether they are justified.
+
+### Issues Found
+Problems that should be fixed before merging.
+
+### Positive Notes
+Things done well.
+
+### Recommendation
+One of: **Ship it** | **Fix issues first** | **Needs rework**
+
+## CRITICAL
+You MUST write the verification report to: `{{.VerifyPath}}`
+{{- if .RetryMode}}
+
+---
+
+# RETRY VERIFICATION (Attempt {{.AttemptNum}})
+
+This is a re-verification after a previous attempt failed. The previous
+verification report is at `{{.WfDir}}/verify.attempt-{{.AttemptNum}}.md`.
+
+When verifying:
+1. Check whether each issue from the previous report has been resolved
+2. For each previously flagged issue, confirm the fix is correct
+3. Note any issues that remain unfixed
+4. Check whether the fixes introduced any new problems
+5. If all previous issues are resolved and no new issues exist, **PASS**
+{{- end}}
+{{- if .MemoryContext}}
+
+---
+
+# Accumulated Context
+
+{{.MemoryContext}}
+{{- end}}
+{{- if .MemoryUpdateInstructions}}
+
+{{.MemoryUpdateInstructions}}
+{{- end}}

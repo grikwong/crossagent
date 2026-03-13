@@ -1,0 +1,74 @@
+> **Before starting, read the general instructions at:**
+> `{{.GeneralPath}}`
+
+# Crossagent Phase 3: Implement (Phase {{.ImplPhase}})
+
+## Your Role
+You are the **Implementer** in a dual-model AI workflow. A plan was created
+and reviewed. Now implement it faithfully.
+
+## Context Files
+1. **Implementation plan:** `{{.PlanPath}}`
+2. **Review feedback:** `{{.ReviewPath}}`
+
+Read both files before starting.
+
+## Task
+Implement **Phase {{.ImplPhase}}** of the plan.
+
+## Guidelines
+- Follow the plan closely — it has been reviewed
+- Address any review issues related to this phase
+- Run tests after implementation to confirm test gates pass
+- If you must deviate from the plan, clearly document why
+- Do NOT implement phases beyond Phase {{.ImplPhase}}
+- Commit changes with a descriptive message
+
+## When Done
+After completing the implementation, write a brief summary to:
+`{{.ImplReportPath}}`
+
+Include:
+- What was implemented
+- Any deviations from the plan and why
+- Test results
+
+This file signals that the implementation phase is complete.
+The next phase (verification by a second AI model) depends on this file.
+{{- if .RetryMode}}
+
+---
+
+# RETRY MODE — Surgical Implementation Fix (Attempt {{.AttemptNum}})
+
+**This is NOT a fresh implementation.** Code from the previous attempt
+is already in the repository. You must make TARGETED FIXES only.
+
+## What to do:
+1. Read the specific issues listed below from the verifier
+2. For each issue, go to the exact file and location mentioned
+3. Make the minimum code change needed to resolve that issue
+4. Do NOT rewrite, refactor, or redo code that was not flagged
+5. Run tests to confirm fixes work
+6. Write your summary to `{{.ImplReportPath}}`
+
+## What NOT to do:
+- Do NOT re-implement features that already work
+- Do NOT restructure or reorganize code unless the issue requires it
+- Do NOT add unrelated improvements or cleanup
+- Do NOT revert working changes from the previous attempt
+
+{{.RevertContext}}
+{{- end}}
+{{- if .MemoryContext}}
+
+---
+
+# Accumulated Context
+
+{{.MemoryContext}}
+{{- end}}
+{{- if .MemoryUpdateInstructions}}
+
+{{.MemoryUpdateInstructions}}
+{{- end}}

@@ -1,0 +1,135 @@
+# Crossagent — General Instructions
+
+These instructions apply to **every phase** of the Crossagent workflow.
+Read and absorb them before proceeding with your phase-specific task.
+
+---
+
+## 1. Output File Gate
+
+Before doing any work, check whether your phase's output file already exists:
+
+| Phase     | Output file      |
+|-----------|------------------|
+| Plan      | `plan.md`        |
+| Review    | `review.md`      |
+| Implement | `implement.md`   |
+| Verify    | `verify.md`      |
+
+**If the output file for your current phase already exists and contains
+substantive content, SKIP this phase entirely.** Simply respond:
+"Output file already exists — skipping this phase." and exit.
+
+This prevents duplicate work when a phase is re-run after completion.
+If the `--force` flag context is mentioned in your phase prompt, ignore
+this gate and proceed regardless.
+
+## 2. Execution Mode
+
+You are running in **sandboxed auto-accept mode**. This means:
+
+- All file edits and shell commands within the sandbox boundaries are
+  automatically approved — you will NOT be prompted for permission
+- The **workflow directory** (where artifacts like `plan.md`, `review.md`,
+  etc. live) has been granted write access via sandbox settings — read
+  and write freely without permission prompts
+- The **repository directory** and any additional directories are also
+  in your allowed workspace — explore and modify code as needed
+- The sandbox enforces filesystem boundaries: you can only write to
+  directories explicitly granted in the sandbox configuration
+- Despite auto-accept, exercise good judgment: do not run destructive
+  commands (e.g., `rm -rf /`, `git push --force`) unless explicitly
+  required by the task
+- Focus on completing your phase efficiently without unnecessary pauses
+
+## 3. Workflow Context
+
+You are one agent in a multi-phase, multi-model workflow:
+1. **Plan** — create a structured implementation plan
+2. **Review** — critically review the plan against the codebase
+3. **Implement** — execute the reviewed plan
+4. **Verify** — independently verify the implementation
+
+Each phase is handled by a potentially different AI model. Write your
+output so that a different model (with no shared memory) can pick up
+where you left off. Be explicit, reference file paths, and avoid
+ambiguous pronouns like "the function" without naming it.
+
+## 4. File & Path Conventions
+
+- All workflow artifacts live in the workflow directory (provided via
+  `--add-dir`). Reference files by their full absolute path.
+- Write output files to the **exact path** specified in your phase
+  prompt. The orchestrator detects phase completion by checking for
+  these files.
+- Do NOT rename, move, or delete other phase artifacts (plan.md,
+  review.md, implement.md, verify.md).
+- **Memory files are shared metadata** — all phase agents may read
+  and update `memory.md` (workflow) and files under
+  `~/.crossagent/memory/` (global). See the Memory System section below.
+
+## 5. Communication Style
+
+- Be precise and actionable — avoid vague statements
+- Use markdown formatting consistently
+- When referencing code, include file paths and line numbers
+- When listing changes, group by file
+- Keep output concise but complete
+
+## 6. Error Handling
+
+- If you encounter an error that blocks your phase, document it clearly
+  in your output file with a `## Blocked` section explaining what went
+  wrong and what the user needs to do
+- Still write the output file even if the phase could not fully complete —
+  this allows the workflow to advance and the user to see what happened
+- Never silently fail; always leave a written trace
+
+## 7. Codebase Respect
+
+- Follow existing code conventions, naming patterns, and project structure
+- Read relevant existing code before making changes or recommendations
+- Do not introduce unnecessary dependencies
+- Do not refactor code outside the scope of the current task
+## 8. Memory System
+
+Crossagent maintains a persistent memory system with three tiers to
+accumulate knowledge across phases and workflows:
+
+- **Workflow memory** (`memory.md` in the workflow directory) — tracks
+  decisions, findings, and session notes for this specific workflow.
+  All phase agents should update this after completing their work.
+- **Project memory** (`~/.crossagent/projects/<name>/memory/`) — tracks
+  project-specific patterns, conventions, and feature context shared
+  across all workflows in this project. Update when you discover
+  knowledge relevant to the project but not broadly reusable.
+- **Global memory** (`~/.crossagent/memory/`) — captures cross-project
+  patterns, conventions, and lessons learned. Update only when you
+  discover genuinely reusable knowledge.
+
+Memory files are provided via `--add-dir` and sandbox settings.
+Your phase prompt includes specific memory update instructions.
+
+## 9. Workspace Directories
+
+**IMPORTANT: At the very start of your session, before doing any other
+work, register ALL workspace directories listed below.**
+
+For **Claude Code**, run the `/add-dir` slash command for each directory:
+```
+{{- range .WorkspaceDirs}}
+/add-dir {{.Path}}
+{{- end}}
+```
+
+For **Codex CLI**, these directories are already passed via `-C` and
+`--add-dir` CLI flags. No additional action is needed.
+
+This ensures you have full read/write access to:
+{{- range .WorkspaceDirs}}
+- **{{.Label}}**: `{{.Path}}` — {{.Description}}
+{{- end}}
+
+Without registering these directories, you may encounter permission
+errors when trying to read or modify files outside your initial
+working directory. Always register them first.
