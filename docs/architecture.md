@@ -10,7 +10,7 @@ Crossagent uses a **layered architecture**:
 2. **Integration** — Machine-readable CLI output (`--json` on `status`, `list`, `phase-cmd`, `agents`).
 3. **Web UI** — Local Node.js companion (`web/`). Embeds terminals, renders artifacts, manages workflows visually.
 
-The Go packages provide the foundational libraries. The bash CLI wires them into commands (being replaced). The Web UI is the primary operator experience. All layers are shipped.
+The Go binary provides the full CLI with typed state management, ordered JSON output, and bash-compatible formatting. The bash CLI is retained during the transition but the Go binary handles all command dispatch. The Web UI is the primary operator experience. All layers are shipped.
 
 ## Why This Architecture
 
@@ -74,7 +74,7 @@ No logic duplication. Bash owns orchestration. UI owns presentation and PTY life
 
 ## Architectural Boundaries
 
-1. Go packages and bash CLI jointly manage workflow state (Go provides typed, safe access; bash is being incrementally replaced)
+1. Go binary handles CLI command dispatch and state management; bash CLI retained during transition
 2. Web UI never writes to `~/.crossagent/` directly — it calls `crossagent advance`/`done`
 3. Web UI uses `phase-cmd --json` for launch params — no duplicated phase logic
 4. Web UI exposes agent management through CLI commands, not direct config writes

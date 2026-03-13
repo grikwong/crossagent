@@ -314,3 +314,52 @@ func TestPhaseID(t *testing.T) {
 		}
 	}
 }
+
+func TestGlobSort(t *testing.T) {
+	// Verify GlobSort matches macOS bash glob ordering where hyphens sort
+	// before end-of-string (opposite of byte comparison).
+	tests := []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{
+			name:  "hyphen prefix",
+			input: []string{"a", "a-b"},
+			want:  []string{"a-b", "a"},
+		},
+		{
+			name:  "real workflow names",
+			input: []string{"crossagent-bash-golang-rewrite", "crossagent-bash-golang-rewrite-phase2", "crossagent-bash-golang-rewrite-phase3"},
+			want:  []string{"crossagent-bash-golang-rewrite-phase2", "crossagent-bash-golang-rewrite-phase3", "crossagent-bash-golang-rewrite"},
+		},
+		{
+			name:  "migration names",
+			input: []string{"esign-migration", "esign-migration-2"},
+			want:  []string{"esign-migration-2", "esign-migration"},
+		},
+		{
+			name:  "no hyphens",
+			input: []string{"c", "a", "b"},
+			want:  []string{"a", "b", "c"},
+		},
+		{
+			name:  "identical prefixes letters",
+			input: []string{"ab", "a"},
+			want:  []string{"a", "ab"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := make([]string, len(tt.input))
+			copy(got, tt.input)
+			GlobSort(got)
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("GlobSort(%v) = %v, want %v", tt.input, got, tt.want)
+					break
+				}
+			}
+		})
+	}
+}

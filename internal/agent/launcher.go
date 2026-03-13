@@ -12,6 +12,12 @@ import (
 	"github.com/pvotal-tech/crossagent/internal/state"
 )
 
+// ANSI formatting constants for error messages (matching bash ${BOLD} and ${NC}).
+const (
+	ansiBold  = "\033[1m"
+	ansiReset = "\033[0m"
+)
+
 // PhaseCmdResult holds the launch parameters for a phase command.
 // Matches the JSON schema consumed by the Web UI.
 type PhaseCmdResult struct {
@@ -206,7 +212,7 @@ func buildCodexPrompt(wfDir, promptFile string) (string, error) {
 		return "", fmt.Errorf("failed to read general instructions: %w", err)
 	}
 
-	return string(generalData) + "\n\n---\n\n" + string(promptData), nil
+	return strings.TrimRight(string(generalData), "\n") + "\n\n---\n\n" + strings.TrimRight(string(promptData), "\n"), nil
 }
 
 // BuildPhaseCmd builds the launch parameters without executing, for phase-cmd --json.
@@ -240,40 +246,40 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 	case "plan":
 		targetPhase = 1
 		if pn > 1 && !force {
-			return nil, fmt.Errorf("plan phase already completed. Use --force to re-run")
+			return nil, fmt.Errorf("Plan phase already completed. Use --force to re-run.")
 		}
 		outputFile = filepath.Join(wfDir, "plan.md")
 
 	case "review":
 		targetPhase = 2
 		if pn < 2 {
-			return nil, fmt.Errorf("complete Phase 1 first. Run: crossagent plan")
+			return nil, fmt.Errorf("Complete Phase 1 first. Run: %scrossagent plan%s", ansiBold, ansiReset)
 		}
 		if pn > 2 && !force {
-			return nil, fmt.Errorf("review phase already completed. Use --force to re-run")
+			return nil, fmt.Errorf("Review phase already completed. Use --force to re-run.")
 		}
 		if _, err := os.Stat(filepath.Join(wfDir, "plan.md")); os.IsNotExist(err) {
-			return nil, fmt.Errorf("plan file missing: %s/plan.md", wfDir)
+			return nil, fmt.Errorf("Plan file missing: %s/plan.md", wfDir)
 		}
 		outputFile = filepath.Join(wfDir, "review.md")
 
 	case "implement":
 		targetPhase = 3
 		if pn < 3 {
-			return nil, fmt.Errorf("complete Phase 2 first. Run: crossagent review")
+			return nil, fmt.Errorf("Complete Phase 2 first. Run: %scrossagent review%s", ansiBold, ansiReset)
 		}
 		if pn > 4 && !force {
-			return nil, fmt.Errorf("workflow is complete. Use --force to re-run implementation")
+			return nil, fmt.Errorf("Workflow is complete. Use --force to re-run implementation.")
 		}
 		outputFile = filepath.Join(wfDir, "implement.md")
 
 	case "verify":
 		targetPhase = 4
 		if pn < 4 {
-			return nil, fmt.Errorf("complete Phase 3 first. Run: crossagent implement")
+			return nil, fmt.Errorf("Complete Phase 3 first. Run: %scrossagent implement%s", ansiBold, ansiReset)
 		}
 		if pn > 4 && !force {
-			return nil, fmt.Errorf("workflow is complete. Use --force to re-run verification")
+			return nil, fmt.Errorf("Workflow is complete. Use --force to re-run verification.")
 		}
 		outputFile = filepath.Join(wfDir, "verify.md")
 	}
@@ -307,7 +313,7 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 		generalFile := filepath.Join(wfDir, "prompts", "general.md")
 		if generalData, err := os.ReadFile(generalFile); err == nil {
 			if promptData, err := os.ReadFile(promptFile); err == nil {
-				promptText = string(generalData) + "\n\n---\n\n" + string(promptData)
+				promptText = strings.TrimRight(string(generalData), "\n") + "\n\n---\n\n" + strings.TrimRight(string(promptData), "\n")
 			} else {
 				promptText = "Read and follow the instructions at " + promptFile
 			}

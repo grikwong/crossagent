@@ -92,7 +92,7 @@ func BuildMemoryContext(wfDir string) (string, error) {
 		}
 	}
 
-	return ctx.String(), nil
+	return strings.TrimRight(ctx.String(), "\n"), nil
 }
 
 // BuildMemoryUpdateInstructions returns instructions for agents to update memory.
@@ -111,7 +111,7 @@ func BuildMemoryUpdateInstructions(wfDir, phaseName string) (string, error) {
 
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("\n## Memory Update Instructions\n\n"))
+	b.WriteString(fmt.Sprintf("## Memory Update Instructions\n\n"))
 	b.WriteString(fmt.Sprintf("After completing your %s work, update the memory files:\n\n", phaseName))
 
 	b.WriteString("### Workflow Memory (REQUIRED)\n")
@@ -143,7 +143,7 @@ func BuildMemoryUpdateInstructions(wfDir, phaseName string) (string, error) {
 	b.WriteString("### Lessons Learned (IF issues encountered)\n")
 	b.WriteString("If you encountered process issues, rework, or discovered improvements to\n")
 	b.WriteString("how Crossagent workflows should be run, append to:\n")
-	b.WriteString(fmt.Sprintf("`%s/lessons-learned.md`\n", memDir))
+	b.WriteString(fmt.Sprintf("`%s/lessons-learned.md`", memDir))
 
 	return b.String(), nil
 }
