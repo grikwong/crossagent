@@ -507,10 +507,15 @@ elif [ ! -d "$WEB_DIR/node_modules" ]; then
 fi
 
 if [ -n "$WEB_MISSING_DEPS" ]; then
-  # Missing prerequisites — record as a failure so it's visible
-  total=$((total + 1))
-  fail=$((fail + 1))
-  printf "  ✗ web UI smoke test skipped — missing: %s\n" "$WEB_MISSING_DEPS" >&2
+  if [ "${CROSSAGENT_REQUIRE_WEB_SMOKE:-}" = "1" ]; then
+    # CI web job: missing prerequisites is a hard failure
+    total=$((total + 1))
+    fail=$((fail + 1))
+    printf "  ✗ web UI smoke test REQUIRED but missing: %s\n" "$WEB_MISSING_DEPS" >&2
+  else
+    # Go job or local dev: graceful skip
+    printf "  ⊘ web UI smoke test skipped — missing: %s\n" "$WEB_MISSING_DEPS"
+  fi
 else
   # Start server in background with a test workflow
   CROSSAGENT_HOME_SAVED="$ORIG_HOME"
