@@ -70,9 +70,11 @@ go install github.com/grikwong/crossagent/cmd/crossagent@latest
 ### Launch
 
 ```bash
-make start    # Build + preflight checks + Web UI at http://localhost:3456
-make check    # Verify prerequisites only
+make start    # Preflight checks + auto-install + build + Web UI at http://localhost:3456
+make check    # Preflight checks + auto-install + build (no server launch)
 ```
+
+On macOS, `make check` and `make start` will detect missing dependencies and offer to install them automatically via Homebrew and npm. Set `CROSSAGENT_AUTO_INSTALL=1` to skip the prompt (auto-yes) or `CROSSAGENT_AUTO_INSTALL=0` for report-only mode.
 
 ### Your first workflow
 
@@ -236,8 +238,8 @@ State is stored in `~/.crossagent/` — workflows, projects, agents, and memory 
 make build    # Compile
 make test     # Unit + integration tests
 make clean    # Remove build artifacts
-make check    # Preflight checks
-make start    # Build + check + launch Web UI
+make check    # Preflight checks + auto-install + build
+make start    # Preflight checks + auto-install + build + launch Web UI
 ```
 
 ## Uninstall
