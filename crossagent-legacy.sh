@@ -481,6 +481,21 @@ _json_artifact() {
     fi
 }
 
+_json_chat_history_entry() {
+    local path="$1"
+    if [[ -f "$path" ]]; then
+        local size
+        size=$(wc -c < "$path" | tr -d ' ')
+        if [[ "$size" -gt 0 ]]; then
+            printf '{"exists":true,"path":"%s","size":%s}' "$(json_escape "$path")" "$size"
+        else
+            printf '{"exists":true,"path":"%s"}' "$(json_escape "$path")"
+        fi
+    else
+        printf '{"exists":false,"path":"%s"}' "$(json_escape "$path")"
+    fi
+}
+
 # ── CLI Construction ────────────────────────────────────────────────────────
 
 # Generate sandbox settings JSON for Claude sessions.
@@ -1791,6 +1806,12 @@ cmd_status() {
     "implement": $(_json_artifact "$d/implement.md"),
     "verify": $(_json_artifact "$d/verify.md"),
     "memory": $(_json_artifact "$d/memory.md")
+  },
+  "chat_history": {
+    "plan": $(_json_chat_history_entry "$d/chat-history/plan.log"),
+    "review": $(_json_chat_history_entry "$d/chat-history/review.log"),
+    "implement": $(_json_chat_history_entry "$d/chat-history/implement.log"),
+    "verify": $(_json_chat_history_entry "$d/chat-history/verify.log")
   }
 }
 EJSON
