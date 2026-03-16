@@ -498,28 +498,52 @@ echo "  Section 14: Preflight script"
 
 PROJECT_ROOT="$(dirname "$BINARY")"
 
+# Check whether all preflight dependencies are available.
+# Tests 14a-14c and 14g assert success, which requires every dep the script checks.
+# In CI jobs that only provision Go (no node/npm/claude/codex) these tests must skip,
+# matching the existing web smoke test gating pattern (Section 15).
+PREFLIGHT_DEPS_OK=true
+for _dep in go node npm claude codex; do
+  if ! command -v "$_dep" >/dev/null 2>&1; then
+    PREFLIGHT_DEPS_OK=false
+    break
+  fi
+done
+
 # 14a. Report-only mode with all deps present should exit 0
-total=$((total + 1))
-if CROSSAGENT_AUTO_INSTALL=0 CROSSAGENT_ROOT="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/preflight.sh" >/dev/null 2>&1; then
-  pass=$((pass + 1)); printf "  ✓ preflight report-only exits 0 when all deps present\n"
+if $PREFLIGHT_DEPS_OK; then
+  total=$((total + 1))
+  if CROSSAGENT_AUTO_INSTALL=0 CROSSAGENT_ROOT="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/preflight.sh" >/dev/null 2>&1; then
+    pass=$((pass + 1)); printf "  ✓ preflight report-only exits 0 when all deps present\n"
+  else
+    fail=$((fail + 1)); printf "  ✗ preflight report-only exits 0 when all deps present\n" >&2
+  fi
 else
-  fail=$((fail + 1)); printf "  ✗ preflight report-only exits 0 when all deps present\n" >&2
+  printf "  ⊘ preflight report-only test skipped — not all deps available\n"
 fi
 
 # 14b. Auto-install mode with all deps present should exit 0 (no actual installs)
-total=$((total + 1))
-if CROSSAGENT_AUTO_INSTALL=1 CROSSAGENT_ROOT="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/preflight.sh" >/dev/null 2>&1; then
-  pass=$((pass + 1)); printf "  ✓ preflight auto-install exits 0 when all deps present\n"
+if $PREFLIGHT_DEPS_OK; then
+  total=$((total + 1))
+  if CROSSAGENT_AUTO_INSTALL=1 CROSSAGENT_ROOT="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/preflight.sh" >/dev/null 2>&1; then
+    pass=$((pass + 1)); printf "  ✓ preflight auto-install exits 0 when all deps present\n"
+  else
+    fail=$((fail + 1)); printf "  ✗ preflight auto-install exits 0 when all deps present\n" >&2
+  fi
 else
-  fail=$((fail + 1)); printf "  ✗ preflight auto-install exits 0 when all deps present\n" >&2
+  printf "  ⊘ preflight auto-install test skipped — not all deps available\n"
 fi
 
 # 14c. Non-interactive (piped stdin, no env var) should still pass when all deps present
-total=$((total + 1))
-if echo "" | CROSSAGENT_ROOT="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/preflight.sh" >/dev/null 2>&1; then
-  pass=$((pass + 1)); printf "  ✓ preflight non-interactive exits 0 when all deps present\n"
+if $PREFLIGHT_DEPS_OK; then
+  total=$((total + 1))
+  if echo "" | CROSSAGENT_ROOT="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/preflight.sh" >/dev/null 2>&1; then
+    pass=$((pass + 1)); printf "  ✓ preflight non-interactive exits 0 when all deps present\n"
+  else
+    fail=$((fail + 1)); printf "  ✗ preflight non-interactive exits 0 when all deps present\n" >&2
+  fi
 else
-  fail=$((fail + 1)); printf "  ✗ preflight non-interactive exits 0 when all deps present\n" >&2
+  printf "  ⊘ preflight non-interactive test skipped — not all deps available\n"
 fi
 
 # 14d. Declined install with stubbed missing dep returns non-zero
@@ -575,23 +599,27 @@ fi
 
 # 14g. Verify preflight runs before go build by checking make check works
 # even without a pre-built binary (the script builds it in Tier 2)
-total=$((total + 1))
-# Remove binary, run make check, verify it rebuilds
-BINARY_BAK=""
-if [ -x "$PROJECT_ROOT/crossagent" ]; then
-  BINARY_BAK="$(mktemp)"
-  cp "$PROJECT_ROOT/crossagent" "$BINARY_BAK"
-  rm -f "$PROJECT_ROOT/crossagent"
-fi
-if CROSSAGENT_AUTO_INSTALL=0 make -C "$PROJECT_ROOT" check >/dev/null 2>&1 && [ -x "$PROJECT_ROOT/crossagent" ]; then
-  pass=$((pass + 1)); printf "  ✓ make check builds binary via preflight (correct ordering)\n"
+if $PREFLIGHT_DEPS_OK; then
+  total=$((total + 1))
+  # Remove binary, run make check, verify it rebuilds
+  BINARY_BAK=""
+  if [ -x "$PROJECT_ROOT/crossagent" ]; then
+    BINARY_BAK="$(mktemp)"
+    cp "$PROJECT_ROOT/crossagent" "$BINARY_BAK"
+    rm -f "$PROJECT_ROOT/crossagent"
+  fi
+  if CROSSAGENT_AUTO_INSTALL=0 make -C "$PROJECT_ROOT" check >/dev/null 2>&1 && [ -x "$PROJECT_ROOT/crossagent" ]; then
+    pass=$((pass + 1)); printf "  ✓ make check builds binary via preflight (correct ordering)\n"
+  else
+    fail=$((fail + 1)); printf "  ✗ make check builds binary via preflight (correct ordering)\n" >&2
+  fi
+  # Restore original binary
+  if [ -n "$BINARY_BAK" ]; then
+    cp "$BINARY_BAK" "$PROJECT_ROOT/crossagent"
+    rm -f "$BINARY_BAK"
+  fi
 else
-  fail=$((fail + 1)); printf "  ✗ make check builds binary via preflight (correct ordering)\n" >&2
-fi
-# Restore original binary
-if [ -n "$BINARY_BAK" ]; then
-  cp "$BINARY_BAK" "$PROJECT_ROOT/crossagent"
-  rm -f "$BINARY_BAK"
+  printf "  ⊘ make check build-ordering test skipped — not all deps available\n"
 fi
 
 # ── 15. Web UI smoke test ─────────────────────────────────────────────────────
