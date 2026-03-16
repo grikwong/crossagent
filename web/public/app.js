@@ -15,6 +15,7 @@ let outputPollTimer = null;     // Poll for output file while session runs
 let retryLoopActive = false;    // Whether we're in an autonomous retry loop
 let projectsData = null;       // Cached projects list
 let selectedProjectFilter = ''; // Current project filter in topbar
+let viewingChatHistory = false; // Whether terminal is showing historical chat replay
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
@@ -765,6 +766,8 @@ async function autoRunNextPhase() {
       cwd: config.cwd,
       cols: term.cols,
       rows: term.rows,
+      workflowDir: config.workflow_dir,
+      phaseName: phaseName,
     }));
 
     startOutputPolling();
@@ -917,6 +920,8 @@ async function runPhase() {
       cwd: config.cwd,
       cols: term.cols,
       rows: term.rows,
+      workflowDir: config.workflow_dir,
+      phaseName: phaseName,
     }));
 
     // Start polling for output file while session runs
@@ -946,6 +951,36 @@ async function loadArtifact(type) {
     viewer.innerHTML = marked.parse(data.content);
   } catch {
     viewer.innerHTML = '<p class="muted centered">Failed to load artifact</p>';
+  }
+}
+
+async function loadChatHistory(phase) {
+  if (sessionActive) return; // Don't interrupt active sessions
+  try {
+    const data = await api(`/chat-history/${phase}`);
+    if (!data.exists) {
+      term.writeln(`\r\n\x1b[33m  No chat history available for ${phase} phase.\x1b[0m\r\n`);
+      return;
+    }
+    viewingChatHistory = true;
+    term.clear();
+    term.writeln(`\x1b[2m  Viewing ${phase} phase chat history\x1b[0m`);
+    term.writeln(`\x1b[2m  ${'─'.repeat(50)}\x1b[0m\r\n`);
+    if (data.large) {
+      // Stream large files
+      const res = await fetch(`/api/chat-history/${phase}/stream`);
+      const text = await res.text();
+      term.write(text);
+    } else {
+      term.write(data.content);
+    }
+    term.writeln(`\r\n\r\n\x1b[2m  ${'─'.repeat(50)}\x1b[0m`);
+    term.writeln(`\x1b[2m  End of ${phase} phase chat history\x1b[0m\r\n`);
+    setGuide(`Viewing ${phase} phase chat history. Click Run to start a new session.`);
+    // Also show the corresponding artifact
+    loadArtifact(phase);
+  } catch (err) {
+    term.writeln(`\r\n\x1b[31m  Error loading chat history: ${err.message}\x1b[0m\r\n`);
   }
 }
 
@@ -1083,6 +1118,16 @@ function bindEvents() {
 
   document.querySelectorAll('.artifact-item').forEach(el => {
     el.addEventListener('click', () => loadArtifact(el.dataset.artifact));
+  });
+
+  // Clickable completed phases — load chat history replay
+  document.querySelectorAll('.phase-item').forEach(el => {
+    el.addEventListener('click', () => {
+      if (!el.classList.contains('completed')) return;
+      const phaseNum = parseInt(el.dataset.phase, 10);
+      const phaseName = PHASE_NAMES[phaseNum];
+      if (phaseName) loadChatHistory(phaseName);
+    });
   });
 
   document.getElementById('new-btn').addEventListener('click', async () => {

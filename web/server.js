@@ -366,6 +366,57 @@ app.post('/api/revert', (req, res) => {
   }
 });
 
+// ── Chat History Capture ────────────────────────────────────────────────────
+
+const CHAT_HISTORY_BUFFER_CAP = 50 * 1024 * 1024; // 50MB cap per session
+
+// API: Read chat history for a phase
+app.get('/api/chat-history/:phase', (req, res) => {
+  const phase = req.params.phase;
+  if (!VALID_PHASES.has(phase)) {
+    return res.status(400).json({ error: `Invalid phase: ${phase}` });
+  }
+  try {
+    const status = crossagentJSON('status', '--json');
+    if (status.error) return res.status(404).json({ error: status.error });
+    const logPath = path.join(status.workflow_dir, 'chat-history', `${phase}.log`);
+    if (!fs.existsSync(logPath)) {
+      return res.json({ exists: false });
+    }
+    const stat = fs.statSync(logPath);
+    // Stream large files instead of loading into memory
+    if (stat.size > 5 * 1024 * 1024) {
+      res.setHeader('Content-Type', 'application/json');
+      res.json({ exists: true, path: logPath, size: stat.size, large: true });
+      return;
+    }
+    const content = fs.readFileSync(logPath, 'utf-8');
+    res.json({ exists: true, content, path: logPath, size: stat.size });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Stream endpoint for large chat history files
+app.get('/api/chat-history/:phase/stream', (req, res) => {
+  const phase = req.params.phase;
+  if (!VALID_PHASES.has(phase)) {
+    return res.status(400).json({ error: `Invalid phase: ${phase}` });
+  }
+  try {
+    const status = crossagentJSON('status', '--json');
+    if (status.error) return res.status(404).json({ error: status.error });
+    const logPath = path.join(status.workflow_dir, 'chat-history', `${phase}.log`);
+    if (!fs.existsSync(logPath)) {
+      return res.status(404).json({ error: 'Chat history not found' });
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    fs.createReadStream(logPath).pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── HTTP + WebSocket Server ─────────────────────────────────────────────────
 
 const server = http.createServer(app);
@@ -373,6 +424,38 @@ const wss = new WebSocketServer({ server, path: '/ws/terminal' });
 
 wss.on('connection', (ws) => {
   let ptyProcess = null;
+  let chatBuffer = [];          // Buffered PTY output chunks
+  let chatBufferSize = 0;       // Total bytes buffered
+  let chatWorkflowDir = null;   // Workflow dir for this session
+  let chatPhaseName = null;     // Phase name for this session
+  let chatFlushed = false;      // Whether we already flushed to disk
+
+  // Flush chat history buffer to disk. Called on exit, kill, or disconnect.
+  // Safe to call multiple times — only the first call writes.
+  function flushChatHistory() {
+    if (chatFlushed) return;
+    chatFlushed = true;
+
+    if (!chatWorkflowDir || !chatPhaseName || chatBuffer.length === 0) return;
+
+    const dir = path.join(chatWorkflowDir, 'chat-history');
+    const logFile = path.join(dir, `${chatPhaseName}.log`);
+    const tmpFile = logFile + '.tmp';
+
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(tmpFile, chatBuffer.join(''), 'utf-8');
+      fs.renameSync(tmpFile, logFile);
+    } catch (err) {
+      console.error(`Failed to write chat history: ${err.message}`);
+      // Clean up temp file if rename failed
+      try { fs.unlinkSync(tmpFile); } catch {}
+    }
+
+    // Release buffer memory
+    chatBuffer = [];
+    chatBufferSize = 0;
+  }
 
   ws.on('error', (err) => {
     console.error('WebSocket error:', err.message);
@@ -389,6 +472,9 @@ wss.on('connection', (ws) => {
 
     switch (msg.type) {
       case 'spawn': {
+        // Flush any previous session's chat history before replacing
+        flushChatHistory();
+
         if (ptyProcess) {
           ptyProcess.kill();
           ptyProcess = null;
@@ -398,6 +484,27 @@ wss.on('connection', (ws) => {
         if (!command) {
           ws.send(JSON.stringify({ type: 'error', message: 'Missing command' }));
           return;
+        }
+
+        // Reset chat history state for new session
+        chatBuffer = [];
+        chatBufferSize = 0;
+        chatFlushed = false;
+
+        // Derive workflowDir from CLI status (never trust client payload)
+        // and validate phaseName against the whitelist.
+        chatWorkflowDir = null;
+        chatPhaseName = null;
+        if (msg.phaseName && VALID_PHASES.has(msg.phaseName)) {
+          try {
+            const status = crossagentJSON('status', '--json');
+            if (status.workflow_dir) {
+              chatWorkflowDir = status.workflow_dir;
+              chatPhaseName = msg.phaseName;
+            }
+          } catch {
+            // If status lookup fails, skip chat history capture (non-blocking)
+          }
         }
 
         try {
@@ -423,9 +530,15 @@ wss.on('connection', (ws) => {
             if (ws.readyState === ws.OPEN) {
               ws.send(JSON.stringify({ type: 'output', data }));
             }
+            // Buffer output for chat history (PTY echo includes user input)
+            if (chatWorkflowDir && chatPhaseName && chatBufferSize < CHAT_HISTORY_BUFFER_CAP) {
+              chatBuffer.push(data);
+              chatBufferSize += Buffer.byteLength(data, 'utf-8');
+            }
           });
 
           ptyProcess.onExit(({ exitCode }) => {
+            flushChatHistory();
             if (ws.readyState === ws.OPEN) {
               ws.send(JSON.stringify({ type: 'exit', code: exitCode }));
             }
@@ -440,12 +553,21 @@ wss.on('connection', (ws) => {
       case 'input': {
         if (ptyProcess) {
           ptyProcess.write(msg.data);
+          // Also capture input for non-echoed cases (e.g. password prompts).
+          // For echoed input this creates minor duplication in the log, but
+          // ensures the full session transcript is preserved regardless of
+          // PTY echo mode.
+          if (chatWorkflowDir && chatPhaseName && chatBufferSize < CHAT_HISTORY_BUFFER_CAP) {
+            chatBuffer.push(msg.data);
+            chatBufferSize += Buffer.byteLength(msg.data, 'utf-8');
+          }
         }
         break;
       }
 
       case 'kill': {
         if (ptyProcess) {
+          flushChatHistory();
           ptyProcess.kill();
           ptyProcess = null;
         }
@@ -467,6 +589,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    flushChatHistory();
     if (ptyProcess) {
       ptyProcess.kill();
       ptyProcess = null;

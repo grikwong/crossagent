@@ -158,6 +158,8 @@ body {
 
 .phase-item.current .phase-label { color: var(--yellow); font-weight: 600; }
 .phase-item.completed .phase-label { color: var(--text-dim); }
+.phase-item.completed { cursor: pointer; }
+.phase-item.completed:hover { background: rgba(56, 139, 253, 0.1); }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 

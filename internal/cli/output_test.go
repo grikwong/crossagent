@@ -49,6 +49,7 @@ func TestStatusJSON_FieldNames(t *testing.T) {
 		`"project"`, `"repo"`, `"add_dirs"`, `"repos"`,
 		`"description"`, `"created"`, `"workflow_dir"`,
 		`"agents"`, `"retry_count"`, `"max_retries"`, `"artifacts"`,
+		`"chat_history"`,
 	}
 	for _, key := range requiredKeys {
 		if !strings.Contains(out, key) {
@@ -651,6 +652,12 @@ func TestPrintStatusJSON_HybridFormat(t *testing.T) {
 			Verify:    ArtifactJSON{Exists: false, Path: "/home/.crossagent/workflows/test-wf/verify.md"},
 			Memory:    ArtifactJSON{Exists: true, Path: "/home/.crossagent/workflows/test-wf/memory.md", Lines: 20},
 		},
+		ChatHistory: OrderedChatHistory{
+			Plan:      ChatHistoryEntry{Exists: false, Path: "/home/.crossagent/workflows/test-wf/chat-history/plan.log"},
+			Review:    ChatHistoryEntry{Exists: false, Path: "/home/.crossagent/workflows/test-wf/chat-history/review.log"},
+			Implement: ChatHistoryEntry{Exists: false, Path: "/home/.crossagent/workflows/test-wf/chat-history/implement.log"},
+			Verify:    ChatHistoryEntry{Exists: false, Path: "/home/.crossagent/workflows/test-wf/chat-history/verify.log"},
+		},
 	}
 
 	err := PrintStatusJSON(s)
@@ -709,6 +716,127 @@ func TestPrintStatusJSON_HybridFormat(t *testing.T) {
 	}
 	if !foundPlanArtifact {
 		t.Errorf("PrintStatusJSON should have artifacts.plan as 4-space indented compact object.\nOutput:\n%s", output)
+	}
+}
+
+func TestStatusJSON_ChatHistoryField(t *testing.T) {
+	s := StatusJSON{
+		Name:    "test-wf",
+		AddDirs: []string{},
+		Repos:   ReposJSON{Additional: []string{}},
+		ChatHistory: OrderedChatHistory{
+			Plan:      ChatHistoryEntry{Exists: true, Path: "/tmp/chat-history/plan.log", Size: 1024},
+			Review:    ChatHistoryEntry{Exists: false, Path: "/tmp/chat-history/review.log"},
+			Implement: ChatHistoryEntry{Exists: false, Path: "/tmp/chat-history/implement.log"},
+			Verify:    ChatHistoryEntry{Exists: false, Path: "/tmp/chat-history/verify.log"},
+		},
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := string(data)
+	if !strings.Contains(out, `"chat_history"`) {
+		t.Errorf("StatusJSON missing chat_history key in output: %s", out)
+	}
+	if !strings.Contains(out, `"size":1024`) {
+		t.Errorf("ChatHistoryEntry with size=1024 should include size, got: %s", out)
+	}
+
+	// Verify size is omitted when 0 (exists=false)
+	if strings.Count(out, `"size"`) != 1 {
+		t.Errorf("ChatHistoryEntry with exists=false should omit size, got: %s", out)
+	}
+}
+
+func TestStatusJSON_ChatHistoryKeyOrder(t *testing.T) {
+	s := StatusJSON{
+		AddDirs: []string{},
+		Repos:   ReposJSON{Additional: []string{}},
+		ChatHistory: OrderedChatHistory{
+			Plan:      ChatHistoryEntry{Exists: true, Path: "/tmp/plan.log", Size: 100},
+			Review:    ChatHistoryEntry{Exists: false, Path: "/tmp/review.log"},
+			Implement: ChatHistoryEntry{Exists: false, Path: "/tmp/implement.log"},
+			Verify:    ChatHistoryEntry{Exists: false, Path: "/tmp/verify.log"},
+		},
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := string(data)
+	// Find positions within chat_history section
+	chStart := strings.Index(out, `"chat_history"`)
+	chSection := out[chStart:]
+	planIdx := strings.Index(chSection, `"plan"`)
+	reviewIdx := strings.Index(chSection, `"review"`)
+	implementIdx := strings.Index(chSection, `"implement"`)
+	verifyIdx := strings.Index(chSection, `"verify"`)
+
+	if planIdx >= reviewIdx || reviewIdx >= implementIdx || implementIdx >= verifyIdx {
+		t.Errorf("chat_history keys not in expected order (plan < review < implement < verify) in: %s", chSection)
+	}
+}
+
+func TestPrintStatusJSON_ChatHistory(t *testing.T) {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	s := StatusJSON{
+		Name:    "test-wf",
+		AddDirs: []string{},
+		Repos:   ReposJSON{Primary: "/tmp/repo", Additional: []string{}},
+		Agents: OrderedAgents{
+			Plan:      AgentRefJSON{Name: "claude", DisplayName: "Claude Code"},
+			Review:    AgentRefJSON{Name: "codex", DisplayName: "OpenAI Codex"},
+			Implement: AgentRefJSON{Name: "claude", DisplayName: "Claude Code"},
+			Verify:    AgentRefJSON{Name: "codex", DisplayName: "OpenAI Codex"},
+		},
+		ChatHistory: OrderedChatHistory{
+			Plan:      ChatHistoryEntry{Exists: true, Path: "/tmp/plan.log", Size: 512},
+			Review:    ChatHistoryEntry{Exists: false, Path: "/tmp/review.log"},
+			Implement: ChatHistoryEntry{Exists: false, Path: "/tmp/implement.log"},
+			Verify:    ChatHistoryEntry{Exists: false, Path: "/tmp/verify.log"},
+		},
+	}
+
+	err := PrintStatusJSON(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	// Should be valid JSON
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		t.Fatalf("PrintStatusJSON output with chat_history is not valid JSON: %v\nOutput: %s", err, output)
+	}
+
+	if _, ok := parsed["chat_history"]; !ok {
+		t.Errorf("PrintStatusJSON output should contain chat_history key.\nOutput:\n%s", output)
+	}
+
+	// Verify chat_history sub-keys are indented 4 spaces
+	foundPlanChat := false
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, `    "plan": {"exists":`) {
+			foundPlanChat = true
+			break
+		}
+	}
+	if !foundPlanChat {
+		t.Errorf("PrintStatusJSON should have chat_history.plan as 4-space indented compact object.\nOutput:\n%s", output)
 	}
 }
 

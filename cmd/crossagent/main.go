@@ -599,6 +599,12 @@ func cmdStatus(args []string) {
 				Verify:    makeArtifact(filepath.Join(d, "verify.md")),
 				Memory:    makeArtifact(filepath.Join(d, "memory.md")),
 			},
+			ChatHistory: cli.OrderedChatHistory{
+				Plan:      makeChatHistoryEntry(filepath.Join(d, "chat-history", "plan.log")),
+				Review:    makeChatHistoryEntry(filepath.Join(d, "chat-history", "review.log")),
+				Implement: makeChatHistoryEntry(filepath.Join(d, "chat-history", "implement.log")),
+				Verify:    makeChatHistoryEntry(filepath.Join(d, "chat-history", "verify.log")),
+			},
 		}
 		if err := cli.PrintStatusJSON(out); err != nil {
 			die(err.Error())
@@ -843,9 +849,40 @@ func cmdOpen(args []string) {
 }
 
 func cmdLog(args []string) {
+	chatMode := hasFlag(args, "--chat")
+
 	name, d, err := cli.RequireWorkflow()
 	if err != nil {
 		die(err.Error())
+	}
+
+	if chatMode {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "  %sChat History: %s%s\n", BOLD, name, NC)
+		separator()
+
+		found := false
+		for _, phase := range []string{"plan", "review", "implement", "verify"} {
+			logPath := filepath.Join(d, "chat-history", phase+".log")
+			if fileExists(logPath) {
+				found = true
+				fmt.Fprintln(os.Stderr)
+				fmt.Fprintf(os.Stderr, "  %s%s.log%s\n", BOLD, phase, NC)
+				fmt.Fprintf(os.Stderr, "  %s%s%s\n", DIM, logPath, NC)
+				fmt.Fprintln(os.Stderr)
+				data, _ := os.ReadFile(logPath)
+				// Write raw terminal data to stdout so ANSI renders correctly
+				os.Stdout.Write(data)
+				fmt.Fprintln(os.Stdout)
+				separator()
+			}
+		}
+
+		if !found {
+			fmt.Fprintf(os.Stderr, "  %sNo chat history yet.%s\n", DIM, NC)
+		}
+		fmt.Fprintln(os.Stderr)
+		return
 	}
 
 	fmt.Fprintln(os.Stderr)
@@ -1932,13 +1969,17 @@ func cmdRevert(args []string) {
 	retryCount++
 	attempt := retryCount
 
-	// Archive artifacts from target phase through phase 4
+	// Archive artifacts and chat history from target phase through phase 4
 	phaseKeys := [5]string{"", "plan", "review", "implement", "verify"}
 	for pi := targetNum; pi <= 4; pi++ {
 		key := phaseKeys[pi]
 		artifact := filepath.Join(d, key+".md")
 		if fileExists(artifact) {
 			os.Rename(artifact, filepath.Join(d, fmt.Sprintf("%s.attempt-%d.md", key, attempt)))
+		}
+		chatLog := filepath.Join(d, "chat-history", key+".log")
+		if fileExists(chatLog) {
+			os.Rename(chatLog, filepath.Join(d, "chat-history", fmt.Sprintf("%s.attempt-%d.log", key, attempt)))
 		}
 	}
 
@@ -2592,7 +2633,7 @@ func usage() {
     version               Show version
 
   WORKFLOW
-    ┌────────┐  plan.md  ┌────────┐  review.md  ┌────────┐  changes  ┌────────┐
+    ┌────────┐  plan.md  ┌────────┐  review.md  ┌────────┐ changes  ┌────────┐
     │ 1.PLAN ├──────────►│2.REVIEW├────────────►│3.IMPL  ├─────────►│4.VERIFY│
     │ Claude │           │ Codex  │             │ Claude │          │ Codex  │
     └────────┘           └────────┘             └────────┘          └────────┘
@@ -2724,7 +2765,6 @@ func phaseAgentName(d, phase string) string {
 	return ag.Name
 }
 
-
 func confInt(d, key string, defaultVal int) int {
 	v, err := state.GetConf(d, key)
 	if err != nil || v == "" {
@@ -2766,6 +2806,14 @@ func makeArtifact(path string) cli.ArtifactJSON {
 		return cli.ArtifactJSON{Exists: true, Path: path, Lines: countLines(path)}
 	}
 	return cli.ArtifactJSON{Exists: false, Path: path}
+}
+
+func makeChatHistoryEntry(path string) cli.ChatHistoryEntry {
+	info, err := os.Stat(path)
+	if err != nil {
+		return cli.ChatHistoryEntry{Exists: false, Path: path}
+	}
+	return cli.ChatHistoryEntry{Exists: true, Path: path, Size: info.Size()}
 }
 
 func launchAgentOrDie(ag *agent.Agent, repo, promptFile, wfDir string, addDirs []string) {

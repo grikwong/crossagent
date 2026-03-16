@@ -86,21 +86,37 @@ func (m *OrderedFileMap) MarshalJSON() ([]byte, error) {
 
 // StatusJSON matches `status --json` output from the bash CLI.
 type StatusJSON struct {
-	Name        string           `json:"name"`
-	Phase       string           `json:"phase"`
-	PhaseLabel  string           `json:"phase_label"`
-	Complete    bool             `json:"complete"`
-	Project     string           `json:"project"`
-	Repo        string           `json:"repo"`
-	AddDirs     []string         `json:"add_dirs"`
-	Repos       ReposJSON        `json:"repos"`
-	Description string           `json:"description"`
-	Created     string           `json:"created"`
-	WorkflowDir string           `json:"workflow_dir"`
-	Agents      OrderedAgents    `json:"agents"`
-	RetryCount  int              `json:"retry_count"`
-	MaxRetries  int              `json:"max_retries"`
-	Artifacts   OrderedArtifacts `json:"artifacts"`
+	Name        string              `json:"name"`
+	Phase       string              `json:"phase"`
+	PhaseLabel  string              `json:"phase_label"`
+	Complete    bool                `json:"complete"`
+	Project     string              `json:"project"`
+	Repo        string              `json:"repo"`
+	AddDirs     []string            `json:"add_dirs"`
+	Repos       ReposJSON           `json:"repos"`
+	Description string              `json:"description"`
+	Created     string              `json:"created"`
+	WorkflowDir string              `json:"workflow_dir"`
+	Agents      OrderedAgents       `json:"agents"`
+	RetryCount  int                 `json:"retry_count"`
+	MaxRetries  int                 `json:"max_retries"`
+	Artifacts   OrderedArtifacts    `json:"artifacts"`
+	ChatHistory OrderedChatHistory  `json:"chat_history"`
+}
+
+// OrderedChatHistory holds per-phase chat history entries in fixed order.
+type OrderedChatHistory struct {
+	Plan      ChatHistoryEntry `json:"plan"`
+	Review    ChatHistoryEntry `json:"review"`
+	Implement ChatHistoryEntry `json:"implement"`
+	Verify    ChatHistoryEntry `json:"verify"`
+}
+
+// ChatHistoryEntry represents a chat history file in status JSON.
+type ChatHistoryEntry struct {
+	Exists bool   `json:"exists"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size,omitempty"`
 }
 
 // AgentRefJSON is the agent reference in status JSON.
@@ -392,6 +408,12 @@ func PrintStatusJSON(s StatusJSON) error {
 	fmt.Fprintf(&buf, "    \"implement\": %s,\n", mc(s.Artifacts.Implement))
 	fmt.Fprintf(&buf, "    \"verify\": %s,\n", mc(s.Artifacts.Verify))
 	fmt.Fprintf(&buf, "    \"memory\": %s\n", mc(s.Artifacts.Memory))
+	buf.WriteString("  },\n")
+	buf.WriteString("  \"chat_history\": {\n")
+	fmt.Fprintf(&buf, "    \"plan\": %s,\n", mc(s.ChatHistory.Plan))
+	fmt.Fprintf(&buf, "    \"review\": %s,\n", mc(s.ChatHistory.Review))
+	fmt.Fprintf(&buf, "    \"implement\": %s,\n", mc(s.ChatHistory.Implement))
+	fmt.Fprintf(&buf, "    \"verify\": %s\n", mc(s.ChatHistory.Verify))
 	buf.WriteString("  }\n")
 	buf.WriteString("}\n")
 
