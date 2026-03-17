@@ -344,6 +344,61 @@ func RequireWorkflow() (string, string, error) {
 	return name, dir, nil
 }
 
+// CreateWorkflow creates a new workflow with the given parameters.
+// It handles directory creation, config writing, description, phase init,
+// setting current, and memory initialization.
+// All paths (repo, addDirs) must be pre-validated absolute paths.
+func CreateWorkflow(name, repo, project, description string, addDirs []string) error {
+	if project == "" {
+		project = "default"
+	}
+	if !ProjectExists(project) {
+		return fmt.Errorf("project '%s' not found", project)
+	}
+	if WorkflowExists(name) {
+		return fmt.Errorf("workflow '%s' already exists", name)
+	}
+
+	d := WorkflowDir(name)
+	if err := os.MkdirAll(filepath.Join(d, "prompts"), 0755); err != nil {
+		return fmt.Errorf("failed to create workflow directory: %w", err)
+	}
+
+	// Write config
+	addDirsCSV := strings.Join(addDirs, ",")
+	pairs := [][2]string{
+		{"repo", repo},
+		{"add_dirs", addDirsCSV},
+		{"created", timeNow()},
+		{"project", project},
+	}
+	for _, p := range pairs {
+		if err := SetConf(d, p[0], p[1]); err != nil {
+			os.RemoveAll(d)
+			return fmt.Errorf("failed to write config key %s: %w", p[0], err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(d, "description"), []byte(description+"\n"), 0644); err != nil {
+		os.RemoveAll(d)
+		return fmt.Errorf("failed to write description: %w", err)
+	}
+	if err := SetPhase(d, "1"); err != nil {
+		os.RemoveAll(d)
+		return fmt.Errorf("failed to set phase: %w", err)
+	}
+	if err := SetCurrent(name); err != nil {
+		os.RemoveAll(d)
+		return fmt.Errorf("failed to set current: %w", err)
+	}
+	if err := InitWorkflowMemory(d, name, description, repo); err != nil {
+		os.RemoveAll(d)
+		return fmt.Errorf("failed to init memory: %w", err)
+	}
+
+	return nil
+}
+
 // timeNow returns the current date as YYYY-MM-DD HH:MM.
 // Extracted as a variable for testing.
 var timeNow = func() string {

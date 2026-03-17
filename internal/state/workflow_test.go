@@ -315,6 +315,105 @@ func TestPhaseID(t *testing.T) {
 	}
 }
 
+func TestCreateWorkflow(t *testing.T) {
+	_, cleanup := withTestHome(t)
+	defer cleanup()
+
+	oldTime := currentTime
+	currentTime = func() time.Time { return time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC) }
+	defer func() { currentTime = oldTime }()
+
+	if err := EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	// Create a temp repo dir
+	repoDir := t.TempDir()
+
+	err := CreateWorkflow("test-wf", repoDir, "default", "Test description", nil)
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+
+	// Verify workflow exists
+	if !WorkflowExists("test-wf") {
+		t.Error("workflow should exist after creation")
+	}
+
+	// Verify current is set
+	cur, _ := GetCurrent()
+	if cur != "test-wf" {
+		t.Errorf("expected current='test-wf', got %q", cur)
+	}
+
+	// Verify phase is 1
+	d := WorkflowDir("test-wf")
+	phase, _ := GetPhase(d)
+	if phase != "1" {
+		t.Errorf("expected phase='1', got %q", phase)
+	}
+
+	// Verify description
+	desc, _ := GetDescription(d)
+	if desc != "Test description" {
+		t.Errorf("expected description='Test description', got %q", desc)
+	}
+
+	// Verify config
+	cfg, _ := ReadConfig(d)
+	if cfg.Repo != repoDir {
+		t.Errorf("expected repo=%q, got %q", repoDir, cfg.Repo)
+	}
+	if cfg.Project != "default" {
+		t.Errorf("expected project='default', got %q", cfg.Project)
+	}
+
+	// Verify memory file exists
+	if _, err := os.Stat(filepath.Join(d, "memory.md")); err != nil {
+		t.Error("memory.md should exist")
+	}
+
+	// Verify duplicate creation fails
+	err = CreateWorkflow("test-wf", repoDir, "default", "Dup", nil)
+	if err == nil {
+		t.Error("expected error for duplicate workflow")
+	}
+
+	// Verify bad project fails
+	err = CreateWorkflow("test-wf-2", repoDir, "nonexistent", "Test", nil)
+	if err == nil {
+		t.Error("expected error for nonexistent project")
+	}
+}
+
+func TestCreateWorkflowWithAddDirs(t *testing.T) {
+	_, cleanup := withTestHome(t)
+	defer cleanup()
+
+	oldTime := currentTime
+	currentTime = func() time.Time { return time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC) }
+	defer func() { currentTime = oldTime }()
+
+	if err := EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	repoDir := t.TempDir()
+	addDir1 := t.TempDir()
+	addDir2 := t.TempDir()
+
+	err := CreateWorkflow("test-dirs", repoDir, "", "With dirs", []string{addDir1, addDir2})
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+
+	d := WorkflowDir("test-dirs")
+	cfg, _ := ReadConfig(d)
+	if len(cfg.AddDirs) != 2 {
+		t.Errorf("expected 2 add_dirs, got %d", len(cfg.AddDirs))
+	}
+}
+
 func TestGlobSort(t *testing.T) {
 	// Verify GlobSort matches macOS bash glob ordering where hyphens sort
 	// before end-of-string (opposite of byte comparison).

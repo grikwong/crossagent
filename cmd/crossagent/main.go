@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/grikwong/crossagent/internal/agent"
 	"github.com/grikwong/crossagent/internal/cli"
@@ -191,11 +190,6 @@ func cmdNew(args []string) {
 		die(fmt.Sprintf("Workflow '%s' already exists. Use %scrossagent use %s%s to switch to it.", name, BOLD, name, NC))
 	}
 
-	d := state.WorkflowDir(name)
-	if err := os.MkdirAll(filepath.Join(d, "prompts"), 0755); err != nil {
-		die(fmt.Sprintf("Failed to create workflow directory: %v", err))
-	}
-
 	// Default repo to cwd
 	if repo == "" {
 		cwd, err := os.Getwd()
@@ -206,8 +200,6 @@ func cmdNew(args []string) {
 	}
 	resolvedRepo, err := cli.ValidatePath(repo)
 	if err != nil {
-		// Clean up on failure
-		os.RemoveAll(d)
 		die(fmt.Sprintf("Repository: %v", err))
 	}
 	repo = resolvedRepo
@@ -217,26 +209,18 @@ func cmdNew(args []string) {
 	for _, ad := range addDirs {
 		resolved, err := cli.ValidatePath(ad)
 		if err != nil {
-			os.RemoveAll(d)
 			die(fmt.Sprintf("Additional directory: %v", err))
 		}
 		resolvedAddDirs = append(resolvedAddDirs, resolved)
 	}
-	addDirsCSV := strings.Join(resolvedAddDirs, ",")
-
-	// Write config
-	setConfOrDie(d, "repo", repo)
-	setConfOrDie(d, "add_dirs", addDirsCSV)
-	setConfOrDie(d, "created", time.Now().Format("2006-01-02 15:04"))
-	setConfOrDie(d, "project", project)
 
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "  %sNew Workflow: %s%s\n", BOLD, name, NC)
 	separator()
 	fmt.Fprintf(os.Stderr, "  %sRepository:%s %s\n", DIM, NC, repo)
 	fmt.Fprintf(os.Stderr, "  %sProject:%s    %s\n", DIM, NC, project)
-	if addDirsCSV != "" {
-		fmt.Fprintf(os.Stderr, "  %sExtra dirs:%s %s\n", DIM, NC, addDirsCSV)
+	if len(resolvedAddDirs) > 0 {
+		fmt.Fprintf(os.Stderr, "  %sExtra dirs:%s %s\n", DIM, NC, strings.Join(resolvedAddDirs, ","))
 	}
 	fmt.Fprintln(os.Stderr)
 
@@ -270,21 +254,11 @@ func cmdNew(args []string) {
 	}
 
 	if desc == "" {
-		os.RemoveAll(d)
 		die("Description cannot be empty.")
 	}
 
-	if err := os.WriteFile(filepath.Join(d, "description"), []byte(desc+"\n"), 0644); err != nil {
-		die(fmt.Sprintf("Failed to write description: %v", err))
-	}
-	if err := state.SetPhase(d, "1"); err != nil {
-		die(fmt.Sprintf("Failed to set phase: %v", err))
-	}
-	if err := state.SetCurrent(name); err != nil {
-		die(fmt.Sprintf("Failed to set current: %v", err))
-	}
-	if err := state.InitWorkflowMemory(d, name, desc, repo); err != nil {
-		die(fmt.Sprintf("Failed to init memory: %v", err))
+	if err := state.CreateWorkflow(name, repo, project, desc, resolvedAddDirs); err != nil {
+		die(fmt.Sprintf("Failed to create workflow: %v", err))
 	}
 
 	fmt.Fprintln(os.Stderr)
@@ -2730,12 +2704,6 @@ func hasFlag(args []string, flag string) bool {
 func requireArg(args []string, i int) {
 	if i+1 >= len(args) {
 		die(fmt.Sprintf("Option %s requires an argument.", args[i]))
-	}
-}
-
-func setConfOrDie(d, key, value string) {
-	if err := state.SetConf(d, key, value); err != nil {
-		die(fmt.Sprintf("Failed to write config %s: %v", key, err))
 	}
 }
 
