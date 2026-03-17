@@ -1,8 +1,10 @@
-# Crossagent
+<div align="center">
+  <img src="assets/crossagent-logo.png" alt="Crossagent logo" height="128">
+  <h1>Crossagent</h1>
+  <p><strong>No single AI model should be both the maker and the checker.</strong> Crossagent is a cross-model agent orchestrator that routes planning and implementation to one AI, then review and verification to another — the same maker-checker principle that makes human code review effective, applied to AI agents.</p>
 
-**No single AI model should be both the maker and the checker.** Crossagent is a cross-model agent orchestrator that routes planning and implementation to one AI, then review and verification to another — the same maker-checker principle that makes human code review effective, applied to AI agents.
-
-[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
+  [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
+</div>
 
 ```
 ┌────────┐  plan.md  ┌────────┐  review.md  ┌────────┐  changes ┌────────┐

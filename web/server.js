@@ -66,6 +66,7 @@ function readArtifact(workflowDir, name) {
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/assets', express.static(path.join(__dirname, '..', 'assets')));
 
 // API: Get workflow status
 app.get('/api/status', (_req, res) => {
