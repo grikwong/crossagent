@@ -761,13 +761,10 @@ async function autoRunNextPhase() {
 
     ws.send(JSON.stringify({
       type: 'spawn',
-      command: config.command,
-      args: config.args,
-      cwd: config.cwd,
+      phaseName: phaseName,
+      force: true,
       cols: term.cols,
       rows: term.rows,
-      workflowDir: config.workflow_dir,
-      phaseName: phaseName,
     }));
 
     startOutputPolling();
@@ -915,13 +912,9 @@ async function runPhase() {
 
     ws.send(JSON.stringify({
       type: 'spawn',
-      command: config.command,
-      args: config.args,
-      cwd: config.cwd,
+      phaseName: phaseName,
       cols: term.cols,
       rows: term.rows,
-      workflowDir: config.workflow_dir,
-      phaseName: phaseName,
     }));
 
     // Start polling for output file while session runs

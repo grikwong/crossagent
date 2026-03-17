@@ -11,11 +11,14 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
 	"github.com/grikwong/crossagent/internal/agent"
 	"github.com/grikwong/crossagent/internal/cli"
 	"github.com/grikwong/crossagent/internal/judge"
 	"github.com/grikwong/crossagent/internal/prompt"
 	"github.com/grikwong/crossagent/internal/state"
+	"github.com/grikwong/crossagent/internal/web"
 )
 
 const Version = "1.0.0"
@@ -129,6 +132,8 @@ func main() {
 		cmdLog(args)
 	case "reset":
 		cmdReset(args)
+	case "serve":
+		cmdServe(args)
 	default:
 		die(fmt.Sprintf("Unknown command: %s. Run 'crossagent help'.", cmd))
 	}
@@ -803,6 +808,53 @@ func cmdDone(args []string) {
 	}
 	state.SetPhase(d, "done")
 	success(fmt.Sprintf("Workflow '%s' marked complete.", name))
+}
+
+func cmdServe(args []string) {
+	port := "3456"
+	openBrowser := false
+
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "--port":
+			requireArg(args, i)
+			port = args[i+1]
+			i += 2
+		case "--open":
+			openBrowser = true
+			i++
+		case "-h", "--help":
+			fmt.Println("Usage: crossagent serve [--port <port>] [--open]")
+			os.Exit(0)
+		default:
+			die(fmt.Sprintf("Unknown option: %s", args[i]))
+		}
+	}
+
+	// Respect CROSSAGENT_PORT env var
+	if envPort := os.Getenv("CROSSAGENT_PORT"); envPort != "" && port == "3456" {
+		port = envPort
+	}
+
+	addr := ":" + port
+
+	if openBrowser {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			url := fmt.Sprintf("http://localhost:%s", port)
+			if runtime.GOOS == "darwin" {
+				exec.Command("open", url).Start()
+			} else {
+				exec.Command("xdg-open", url).Start()
+			}
+		}()
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  Crossagent UI running at http://localhost:%s\n\n", port)
+	if err := web.Serve(addr); err != nil {
+		die(fmt.Sprintf("Server failed: %v", err))
+	}
 }
 
 func cmdOpen(args []string) {
@@ -2598,6 +2650,11 @@ func usage() {
     memory edit --global  Edit global context in $EDITOR
     memory edit --project [name] Edit project context in $EDITOR
       --json              JSON output for show/list
+
+  WEB UI
+    serve [opts]          Start the web UI server
+      --port <port>         Listen port (default: 3456, or CROSSAGENT_PORT)
+      --open                Open browser automatically
 
   UTILITIES
     log                   Display all artifacts (plan, review, report)

@@ -86,40 +86,6 @@ else
   MISSING_INSTALL+=("brew install go")
 fi
 
-# --- node (18+) ---
-printf "  %-28s" "node (18+)"
-if command -v node >/dev/null 2>&1; then
-  V="$(node --version)"
-  MAJOR=$(echo "$V" | sed 's/^v//' | cut -d. -f1)
-  if [ "${MAJOR:-0}" -ge 18 ] 2>/dev/null; then
-    echo "✓  $V"
-  else
-    echo "✗  $V (need v18+)"
-    PASS=false
-    MISSING+=("node")
-    MISSING_LABELS+=("node (upgrade to 18+)")
-    MISSING_INSTALL+=("brew install node")
-  fi
-else
-  echo "✗  not found"
-  PASS=false
-  MISSING+=("node")
-  MISSING_LABELS+=("node")
-  MISSING_INSTALL+=("brew install node")
-fi
-
-# --- npm ---
-printf "  %-28s" "npm"
-if command -v npm >/dev/null 2>&1; then
-  echo "✓  $(npm --version)"
-else
-  echo "✗  not found"
-  PASS=false
-  MISSING+=("npm")
-  MISSING_LABELS+=("npm (installed with node)")
-  MISSING_INSTALL+=("brew install node")
-fi
-
 # --- claude (Claude Code CLI) ---
 printf "  %-28s" "claude (Claude Code CLI)"
 if command -v claude >/dev/null 2>&1; then
@@ -146,18 +112,11 @@ fi
 
 # ── Section 3: Report (Tier 1) ─────────────────────────────────────────────
 
-# Filter to only the installable missing deps (dedup brew install node for npm)
+# Filter to only the installable missing deps
 UNIQUE_INSTALLS=()
 UNIQUE_LABELS=()
-seen_node_brew=false
 for i in "${!MISSING[@]}"; do
-  inst="${MISSING_INSTALL[$i]}"
-  # Deduplicate: if npm is missing and node is also missing, one brew install node covers both
-  if [ "$inst" = "brew install node" ]; then
-    if $seen_node_brew; then continue; fi
-    seen_node_brew=true
-  fi
-  UNIQUE_INSTALLS+=("$inst")
+  UNIQUE_INSTALLS+=("${MISSING_INSTALL[$i]}")
   UNIQUE_LABELS+=("${MISSING_LABELS[$i]}")
 done
 
@@ -216,12 +175,12 @@ install_tier1() {
     fi
   done
 
-  # Check that node/npm are available before npm-based installs
+  # Check that npm is available before npm-based installs
   if [ ${#npm_installs[@]} -gt 0 ]; then
     if ! command -v npm >/dev/null 2>&1; then
       echo ""
       echo "  npm is not available — skipping npm-based installs."
-      echo "  Install Node.js first, then re-run."
+      echo "  Install Node.js first (for claude/codex CLIs), then re-run."
       any_failed=true
       npm_installs=()
     fi
@@ -318,60 +277,6 @@ else
     fi
   else
     echo "  ✗ Go is not available — cannot build crossagent"
-    PASS=false
-  fi
-fi
-
-# --- web/node_modules ---
-printf "  %-28s" "web/node_modules"
-if [ -d "$ROOT/web/node_modules" ]; then
-  echo "✓  installed"
-else
-  echo "…  installing"
-  if command -v npm >/dev/null 2>&1; then
-    if (cd "$ROOT/web" && npm install); then
-      echo "  ✓ web/node_modules installed"
-    else
-      echo "  ✗ npm install failed in web/"
-      PASS=false
-    fi
-  else
-    echo "  ✗ npm is not available — cannot install web dependencies"
-    PASS=false
-  fi
-fi
-
-# --- node-pty native addon ---
-printf "  %-28s" "node-pty native addon"
-if node -e "require('$ROOT/web/node_modules/node-pty')" 2>/dev/null; then
-  echo "✓  loaded"
-else
-  if [ -d "$ROOT/web/node_modules" ]; then
-    echo "…  rebuilding"
-    if (cd "$ROOT/web" && npm rebuild node-pty 2>/dev/null); then
-      echo "  ✓ node-pty rebuilt"
-    else
-      echo "✗  broken — run: cd web && npm rebuild node-pty"
-      PASS=false
-    fi
-  else
-    echo "✗  web/node_modules not installed"
-    PASS=false
-  fi
-fi
-
-# --- pty spawn-helper ---
-printf "  %-28s" "pty spawn-helper"
-SH=$(find "$ROOT/web/node_modules/node-pty/prebuilds" -name spawn-helper 2>/dev/null | head -1)
-if [ -z "$SH" ]; then
-  echo "⊘  not found (ok if node-pty uses fallback)"
-elif [ -x "$SH" ]; then
-  echo "✓  executable"
-else
-  if chmod +x "$SH" 2>/dev/null; then
-    echo "✓  fixed (was not executable)"
-  else
-    echo "✗  not executable — run: chmod +x $SH"
     PASS=false
   fi
 fi

@@ -45,7 +45,7 @@ Crossagent runs on top of CLI tools that use **subscription-based plans** (Claud
 
 ### Prerequisites
 
-- **Go 1.22+** and **Node.js 18+**
+- **Go 1.22+**
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and [Codex CLI](https://github.com/openai/codex) — both authenticated
 
 ### Install
@@ -53,8 +53,7 @@ Crossagent runs on top of CLI tools that use **subscription-based plans** (Claud
 ```bash
 git clone <this-repo> ~/tools/crossagent
 cd ~/tools/crossagent
-make build           # Compiles the Go binary
-make install-ui      # Installs Web UI dependencies
+make build           # Compiles the single binary (includes embedded Web UI)
 ```
 
 <details>
@@ -72,11 +71,12 @@ go install github.com/grikwong/crossagent/cmd/crossagent@latest
 ### Launch
 
 ```bash
-make start    # Preflight checks + auto-install + build + Web UI at http://localhost:3456
+make start    # Build + launch Web UI at http://localhost:3456
 make check    # Preflight checks + auto-install + build (no server launch)
+crossagent serve --open   # Or run directly with browser auto-open
 ```
 
-On macOS, `make check` and `make start` will detect missing dependencies and offer to install them automatically via Homebrew and npm. Set `CROSSAGENT_AUTO_INSTALL=1` to skip the prompt (auto-yes) or `CROSSAGENT_AUTO_INSTALL=0` for report-only mode.
+On macOS, `make check` will detect missing dependencies and offer to install them automatically via Homebrew. Set `CROSSAGENT_AUTO_INSTALL=1` to skip the prompt (auto-yes) or `CROSSAGENT_AUTO_INSTALL=0` for report-only mode.
 
 ### Your first workflow
 
@@ -105,7 +105,7 @@ On macOS, `make check` and `make start` will detect missing dependencies and off
 | **Artifact sidebar** | Click any artifact to view rendered markdown |
 | **Workflow selector** | Switch between workflows |
 
-**Environment variables:** `CROSSAGENT_PORT` (default `3456`), `CROSSAGENT_BIN` (default `../crossagent`), `CROSSAGENT_HOME` (default `~/.crossagent`).
+**Environment variables:** `CROSSAGENT_PORT` (default `3456`), `CROSSAGENT_HOME` (default `~/.crossagent`).
 
 ## CLI Reference
 
@@ -208,24 +208,30 @@ Layered design — see [docs/architecture.md](docs/architecture.md) for the full
 |-------|------|----------|
 | Core | Go binary — state, agents, prompts, judging | `cmd/`, `internal/` |
 | Integration | `--json` output for machine consumption | CLI flags |
-| Web UI | Browser app — terminals, artifacts, workflows | `web/` |
+| Web UI | Embedded Go HTTP/WebSocket server + vanilla JS frontend | `internal/web/` |
 
-Zero external Go dependencies — only the standard library.
+Two external Go dependencies: `github.com/creack/pty` (Unix PTY allocation) and `github.com/gorilla/websocket` (WebSocket server for terminal streaming).
 
 <details>
 <summary>Source layout</summary>
 
 ```text
 crossagent/
-├── cmd/crossagent/main.go       # CLI entry point
+├── cmd/crossagent/main.go       # CLI entry point (includes serve command)
 ├── internal/
 │   ├── state/                   # Config, workflow, project, memory
 │   ├── agent/                   # Agent registry, phase assignments, launcher
 │   ├── cli/                     # JSON types, ordered serialization
 │   ├── prompt/                  # Template-based prompt generation & memory context
 │   │   └── templates/           # Embedded Go templates
-│   └── judge/                   # Verdict parsing for review & verify
-├── web/                         # Node.js + vanilla JS frontend
+│   ├── judge/                   # Verdict parsing for review & verify
+│   └── web/                     # Embedded HTTP/WebSocket server + frontend assets
+│       ├── server.go            # HTTP server setup, routes, static file serving
+│       ├── api.go               # REST API handlers (22 endpoints)
+│       ├── terminal.go          # WebSocket + PTY handler, chat history capture
+│       ├── embed.go             # go:embed directive for frontend assets
+│       └── public/              # Vanilla JS frontend (HTML, CSS, JS, vendored libs)
+├── web/                         # Legacy Node.js server (retained for reference)
 ├── test/                        # Integration tests
 ├── docs/                        # Architecture decision records
 └── Makefile
@@ -248,7 +254,6 @@ make start    # Preflight checks + auto-install + build + launch Web UI
 
 ```bash
 make uninstall          # Removes CLI binary
-rm -rf web/node_modules # Removes Web UI dependencies
 rm -rf ~/.crossagent    # Removes all workflow data
 ```
 

@@ -503,7 +503,7 @@ PROJECT_ROOT="$(dirname "$BINARY")"
 # In CI jobs that only provision Go (no node/npm/claude/codex) these tests must skip,
 # matching the existing web smoke test gating pattern (Section 15).
 PREFLIGHT_DEPS_OK=true
-for _dep in go node npm claude codex; do
+for _dep in go claude codex; do
   if ! command -v "$_dep" >/dev/null 2>&1; then
     PREFLIGHT_DEPS_OK=false
     break
@@ -627,14 +627,9 @@ fi
 echo ""
 echo "  Section 15: Web UI smoke test"
 
-WEB_DIR="$(dirname "$BINARY")/web"
 WEB_MISSING_DEPS=""
-if ! command -v node >/dev/null 2>&1; then
-  WEB_MISSING_DEPS="node"
-elif ! command -v curl >/dev/null 2>&1; then
+if ! command -v curl >/dev/null 2>&1; then
   WEB_MISSING_DEPS="curl"
-elif [ ! -d "$WEB_DIR/node_modules" ]; then
-  WEB_MISSING_DEPS="node_modules (run: make install-ui)"
 fi
 
 if [ -n "$WEB_MISSING_DEPS" ]; then
@@ -644,11 +639,11 @@ if [ -n "$WEB_MISSING_DEPS" ]; then
     fail=$((fail + 1))
     printf "  ✗ web UI smoke test REQUIRED but missing: %s\n" "$WEB_MISSING_DEPS" >&2
   else
-    # Go job or local dev: graceful skip
+    # Graceful skip
     printf "  ⊘ web UI smoke test skipped — missing: %s\n" "$WEB_MISSING_DEPS"
   fi
 else
-  # Start server in background with a test workflow
+  # Start Go server in background with a test workflow
   CROSSAGENT_HOME_SAVED="$ORIG_HOME"
 
   # Create a fresh home for web test
@@ -659,8 +654,8 @@ else
   # Pick a random port to avoid conflicts
   WEB_PORT=$((10000 + RANDOM % 50000))
   WEB_STDERR="$(mktemp)"
-  CROSSAGENT_PORT="$WEB_PORT" CROSSAGENT_BIN="$BINARY" CROSSAGENT_HOME="$WEB_TEST_HOME" \
-    node "$WEB_DIR/server.js" >/dev/null 2>"$WEB_STDERR" &
+  CROSSAGENT_HOME="$WEB_TEST_HOME" \
+    "$BINARY" serve --port "$WEB_PORT" >/dev/null 2>"$WEB_STDERR" &
   WEB_PID=$!
   sleep 2
 

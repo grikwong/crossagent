@@ -16,24 +16,24 @@ Default phase mapping:
 ```
 crossagent/
 ├── go.mod              # Go module (github.com/grikwong/crossagent)
-├── cmd/crossagent/     # Go CLI entry point (fully wired)
+├── cmd/crossagent/     # Go CLI entry point (fully wired, includes `serve` command)
 ├── internal/
 │   ├── state/          #   Data layer — config, workflow, project, memory
 │   ├── agent/          #   Agent registry, phase assignments, CLI launcher
 │   ├── cli/            #   JSON types, ordered serialization, hybrid formatting
 │   ├── prompt/         #   Template-based prompt generation & memory context
 │   │   └── templates/  #     Embedded Go templates (general, plan, review, implement, verify)
-│   └── judge/          #   Verdict parsing for review & verify outputs
+│   ├── judge/          #   Verdict parsing for review & verify outputs
+│   └── web/            #   Embedded HTTP/WebSocket server + frontend assets
+│       ├── embed.go    #     go:embed directive for public/ assets
+│       ├── server.go   #     HTTP server setup, routes, static file serving
+│       ├── api.go      #     REST API handlers (22 endpoints)
+│       ├── terminal.go #     WebSocket + PTY handler, chat history capture
+│       └── public/     #     Vanilla JS frontend (HTML, CSS, JS, vendored libs)
 ├── crossagent-legacy.sh  # Deprecated bash CLI (retained for compatibility testing)
 ├── test/             # Integration test suite
 │   └── integration_test.sh
-├── web/              # Web UI — Node.js companion app
-│   ├── server.js     #   Express + WebSocket + PTY server
-│   ├── package.json  #   Dependencies (express, node-pty, ws)
-│   └── public/       #   Browser frontend (HTML, CSS, JS)
-│       ├── index.html
-│       ├── app.js
-│       └── style.css
+├── web/              # Legacy Node.js server (retained for reference, no longer runtime-required)
 ├── docs/             # Architecture decision record
 ├── CLAUDE.md         # This file
 ├── README.md         # Human documentation
@@ -109,7 +109,7 @@ The `crossagent projects` CLI subcommand manages projects:
 
 ## Go Conventions
 
-- Zero external dependencies — only the Go standard library
+- Two external dependencies: `github.com/creack/pty` (Unix PTY) and `github.com/gorilla/websocket` (WebSocket server) — both for the embedded web server
 - Atomic writes via temp file + rename pattern to prevent partial-write corruption
 - File locking (flock) for concurrent `SetConf` calls
 - Embedded templates via `embed.FS` in `internal/prompt/templates/`
@@ -118,11 +118,13 @@ The `crossagent projects` CLI subcommand manages projects:
 
 ## Web UI Conventions
 
-- Node.js server uses `execFileSync` (not `execSync`) to call the CLI — no shell interpolation
-- All user input is validated server-side before passing to CLI commands
-- PTY sessions are owned by the Web UI; launch params come from `crossagent phase-cmd --json`
-- Frontend uses vanilla JS, no build step — CDN for xterm.js and marked
-- WebSocket protocol: `spawn`, `input`, `resize` from client; `output`, `spawned`, `exit`, `error` from server
+- The Web UI is an embedded Go HTTP/WebSocket server in `internal/web/`, served via `crossagent serve`
+- API handlers shell out to the crossagent binary for complex operations (guarantees JSON compatibility)
+- All user input is validated server-side before processing
+- PTY sessions use `creack/pty` + `gorilla/websocket`; launch params come from `crossagent phase-cmd --json`
+- Frontend uses vanilla JS, no build step — xterm.js, addon-fit, and marked are vendored in `public/vendor/`
+- WebSocket protocol: `spawn`, `input`, `resize`, `kill` from client; `output`, `spawned`, `exit`, `error` from server
+- Chat history is captured per-session with a 50MB buffer cap, flushed atomically on exit/kill/disconnect
 
 ## Layered Architecture
 
@@ -130,7 +132,7 @@ See [docs/architecture.md](docs/architecture.md) for the full decision record.
 
 1. **Core layer** — Go packages (`internal/`) provide state management, agent orchestration, prompt generation, and verdict judging. The CLI entry point is `cmd/crossagent/main.go`.
 2. **Integration layer** — `--json` output on `status`, `list`, `phase-cmd`, and `agents`.
-3. **Web UI layer** — Node.js companion in `web/`. Embeds terminals, renders artifacts, manages workflows.
+3. **Web UI layer** — Embedded Go HTTP/WebSocket server in `internal/web/`. Serves frontend assets, REST API, and terminal sessions.
 
 Critical boundaries:
 - Web UI never writes to `~/.crossagent/` directly — it calls `crossagent advance`/`done` for state changes
@@ -140,7 +142,6 @@ Critical boundaries:
 
 ## When Modifying the CLI
 
-- Keep zero external dependencies — only the Go standard library
 - Supported agent adapters are `claude` and `codex`
 - Maintain the phase gate pattern: each phase checks prerequisites before running
 - All output files (plan.md, review.md, verify.md) are written by the launched AI, not by crossagent itself
@@ -152,7 +153,6 @@ Critical boundaries:
 
 ## When Modifying Go Packages
 
-- Keep zero external dependencies — only the Go standard library
 - Use atomic writes (`atomicWrite`) for any state mutation
 - Agent adapters: "claude" and "codex" — new adapters require updates in both `agent.go` and `launcher.go`
 - Prompt templates live in `internal/prompt/templates/` as embedded `.md.tmpl` files
@@ -161,8 +161,10 @@ Critical boundaries:
 
 ## When Modifying the Web UI
 
-- Keep the server thin — it should only proxy CLI commands and manage PTY sessions
+- The web server lives in `internal/web/` — `server.go` (routing), `api.go` (handlers), `terminal.go` (WebSocket+PTY)
+- API handlers use `exec.Command` to shell out to the crossagent binary for JSON-producing operations
 - Validate all inputs server-side (names, phases, artifact types)
-- Use `execFileSync` with array args to prevent command injection
 - Don't add a frontend build step — keep it as plain HTML/CSS/JS
-- Test by running `make start` (runs preflight checks then launches server)
+- Frontend assets are embedded via `go:embed all:public` in `embed.go`
+- Vendored browser libraries (xterm.js, marked) live in `public/vendor/`
+- Test by running `make start` (builds binary then launches `crossagent serve`)
