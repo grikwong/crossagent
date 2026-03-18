@@ -293,7 +293,7 @@ func (m MemoryShowJSON) MarshalJSON() ([]byte, error) {
 			Content *string         `json:"content"`
 			Files   *OrderedFileMap `json:"files,omitempty"`
 		}
-		return marshalNoEscape(raw{m.Type, m.Name, m.Path, m.Content, m.Files})
+		return marshalNoEscape(raw(m))
 	}
 }
 

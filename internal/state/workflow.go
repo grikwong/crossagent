@@ -402,7 +402,7 @@ func CreateWorkflow(name, repo, project, description string, addDirs []string) e
 // timeNow returns the current date as YYYY-MM-DD HH:MM.
 // Extracted as a variable for testing.
 var timeNow = func() string {
-	return fmt.Sprintf("%s", currentTime().Format("2006-01-02 15:04"))
+	return currentTime().Format("2006-01-02 15:04")
 }
 
 // dateNow returns the current date as YYYY-MM-DD.

@@ -738,7 +738,7 @@ func cmdList(args []string) {
 
 func cmdUse(args []string) {
 	if len(args) == 0 {
-		die(fmt.Sprintf("Usage: crossagent use <name>"))
+		die("Usage: crossagent use <name>")
 	}
 	target := args[0]
 	if !state.WorkflowExists(target) {

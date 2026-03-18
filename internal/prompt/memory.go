@@ -111,7 +111,7 @@ func BuildMemoryUpdateInstructions(wfDir, phaseName string) (string, error) {
 
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("## Memory Update Instructions\n\n"))
+	b.WriteString("## Memory Update Instructions\n\n")
 	b.WriteString(fmt.Sprintf("After completing your %s work, update the memory files:\n\n", phaseName))
 
 	b.WriteString("### Workflow Memory (REQUIRED)\n")
@@ -128,7 +128,7 @@ func BuildMemoryUpdateInstructions(wfDir, phaseName string) (string, error) {
 		b.WriteString(fmt.Sprintf("- Domain knowledge relevant to this project -> `%s/project-context.md`\n", projMemDir))
 		b.WriteString(fmt.Sprintf("- Project-specific retrospective insights -> `%s/lessons-learned.md`\n", projMemDir))
 		b.WriteString(fmt.Sprintf("- Feature-level context (if applicable) -> `%s/features/<feature-name>.md`\n", projMemDir))
-		b.WriteString(fmt.Sprintf("\nDo NOT duplicate information that belongs in global memory.\n"))
+		b.WriteString("\nDo NOT duplicate information that belongs in global memory.\n")
 		b.WriteString(fmt.Sprintf("Project memory is for patterns/knowledge specific to the \"%s\" project.\n", project))
 	}
 

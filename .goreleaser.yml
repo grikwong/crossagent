@@ -21,7 +21,8 @@ builds:
 
 archives:
   - id: crossagent
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: "crossagent_{{ .Os }}_{{ .Arch }}"
 
 checksum:
@@ -35,17 +36,14 @@ changelog:
       - "^test:"
       - "^ci:"
 
-brews:
+homebrew_casks:
   - name: crossagent
+    binaries:
+      - crossagent
     repository:
       owner: grikwong
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
+    directory: Casks
     homepage: "https://github.com/grikwong/crossagent"
     description: "Cross-model AI agent orchestrator with browser-based Web UI"
-    license: "AGPL-3.0-or-later"
-    install: |
-      bin.install "crossagent"
-    test: |
-      system "#{bin}/crossagent", "version"
