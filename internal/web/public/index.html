@@ -17,17 +17,18 @@
         <span class="version">v1.0.0</span>
       </div>
       <div class="topbar-center">
-        <select id="project-select" title="Filter by project">
+        <select id="project-select" aria-label="Filter by project" data-tooltip="Filter workflows by project">
           <option value="">All Projects</option>
         </select>
-        <select id="workflow-select">
+        <select id="workflow-select" aria-label="Select workflow">
           <option value="">No workflows</option>
         </select>
-        <button id="new-btn" class="btn btn-sm" title="New Workflow">+</button>
-        <button id="manage-projects-btn" class="btn btn-sm" title="Manage Projects">Projects</button>
+        <button id="new-btn" class="btn btn-sm" aria-label="Create a new workflow" data-tooltip="Create a new workflow — define a task for the AI to work on">+</button>
+        <button id="manage-projects-btn" class="btn btn-sm" data-tooltip="Create and manage projects to organize your workflows">Projects</button>
       </div>
       <div class="topbar-right">
-        <span id="connection-status" class="status-dot" title="Disconnected"></span>
+        <button id="tour-btn" class="btn btn-sm" data-tooltip="Replay the guided tour" aria-label="Help">?</button>
+        <span id="connection-status" class="status-dot" data-tooltip="Server connection status" aria-label="Connection status"></span>
       </div>
     </header>
 
@@ -39,22 +40,22 @@
         <div class="panel">
           <div class="panel-header">Phases</div>
           <div id="phase-tracker" class="phase-tracker">
-            <div class="phase-item" data-phase="1" title="Click to view chat history when completed">
+            <div class="phase-item" data-phase="1" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">1. Plan</span>
               <span class="phase-tool">Claude</span>
             </div>
-            <div class="phase-item" data-phase="2" title="Click to view chat history when completed">
+            <div class="phase-item" data-phase="2" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">2. Review</span>
               <span class="phase-tool">Codex</span>
             </div>
-            <div class="phase-item" data-phase="3" title="Click to view chat history when completed">
+            <div class="phase-item" data-phase="3" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">3. Implement</span>
               <span class="phase-tool">Claude</span>
             </div>
-            <div class="phase-item" data-phase="4" title="Click to view chat history when completed">
+            <div class="phase-item" data-phase="4" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">4. Verify</span>
               <span class="phase-tool">Codex</span>
@@ -66,10 +67,10 @@
         <div class="panel">
           <div class="panel-header">Actions</div>
           <div class="actions">
-            <button id="run-phase-btn" class="btn btn-primary btn-block">Run Next Phase</button>
+            <button id="run-phase-btn" class="btn btn-primary btn-block" data-tooltip="Launch the current phase AI agent">Run Next Phase</button>
             <div class="btn-row">
-              <button id="advance-btn" class="btn btn-sm btn-block" title="Manually advance to the next phase (use if auto-detection missed it)">Advance</button>
-              <button id="done-btn" class="btn btn-sm btn-block" title="Mark this workflow as complete">Done</button>
+              <button id="advance-btn" class="btn btn-sm btn-block" data-tooltip="Manually advance to the next phase if auto-detection missed it">Advance</button>
+              <button id="done-btn" class="btn btn-sm btn-block" data-tooltip="Mark this workflow as complete">Done</button>
             </div>
           </div>
         </div>
@@ -100,7 +101,7 @@
         <div class="panel">
           <div class="panel-header">
             <span>Directories</span>
-            <button id="add-dir-btn" class="btn-icon" title="Add directory">+</button>
+            <button id="add-dir-btn" class="btn-icon" data-tooltip="Add an additional directory for AI agents to access" aria-label="Add directory">+</button>
           </div>
           <div id="dir-list" class="dir-list">
             <p class="muted dir-empty">No active workflow</p>
@@ -148,23 +149,31 @@
     <div class="modal-backdrop"></div>
     <div class="modal-content">
       <h2>New Workflow</h2>
+      <div id="new-form-error" class="form-error-banner hidden"></div>
       <form id="new-form">
         <label>Name
           <input type="text" id="new-name" placeholder="feature-name" required>
+          <span class="field-hint">A unique identifier for this workflow. Use letters, numbers, hyphens, underscores, or dots. No spaces.</span>
+          <span class="field-error" id="new-name-error"></span>
         </label>
         <label>Project
           <select id="new-project">
             <option value="default">default</option>
           </select>
+          <span class="field-hint">Group related workflows under a project. New workflows default to 'default'.</span>
         </label>
         <label>Repository Path
           <input type="text" id="new-repo" placeholder="~/projects/my-app">
+          <span class="field-hint">Absolute path to the repository this workflow targets. Leave blank to set later.</span>
         </label>
         <label>Additional Directories
           <textarea id="new-dirs" rows="2" placeholder="One path per line (optional)"></textarea>
+          <span class="field-hint">Extra directories the AI agents can access. One absolute path per line.</span>
         </label>
         <label>Description
           <textarea id="new-desc" rows="4" placeholder="Describe the feature or task..." required></textarea>
+          <span class="field-hint">Describe what you want to build or fix. Be specific — this drives the AI planning phase.</span>
+          <span class="field-error" id="new-desc-error"></span>
         </label>
         <div class="modal-actions">
           <button type="button" id="new-cancel" class="btn btn-sm">Cancel</button>
@@ -221,6 +230,54 @@
       <div class="modal-actions">
         <button id="suggest-keep" class="btn btn-sm">Keep in Default</button>
         <button id="suggest-move" class="btn btn-primary btn-sm">Move</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Elicitation Modal -->
+  <div id="elicit-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content modal-wide">
+      <h2>Refine Your Request</h2>
+      <p class="elicit-intro">Help the AI understand your request better. All fields are optional — skip any that don't apply.</p>
+      <form id="elicit-form">
+        <label>Scope
+          <span class="field-hint">What's in scope and out of scope for this change?</span>
+          <textarea id="elicit-scope" rows="2" placeholder="e.g., Only modify the frontend; don't touch the database layer"></textarea>
+        </label>
+        <label>Implementation Style
+          <span class="field-hint">How should the AI approach the implementation?</span>
+          <div class="radio-group">
+            <label class="radio-label"><input type="radio" name="elicit-style" value="surgical" checked> <strong>Surgical</strong> — Minimal changes, follow existing code style</label>
+            <label class="radio-label"><input type="radio" name="elicit-style" value="holistic"> <strong>Holistic</strong> — Refactor and improve surrounding code as needed</label>
+            <label class="radio-label"><input type="radio" name="elicit-style" value=""> <strong>No preference</strong> — Let the AI decide</label>
+          </div>
+        </label>
+        <label>Constraints
+          <span class="field-hint">Any requirements the AI should respect?</span>
+          <textarea id="elicit-constraints" rows="2" placeholder="e.g., Must be backward compatible, no new dependencies"></textarea>
+        </label>
+        <label>Acceptance Criteria
+          <span class="field-hint">How will you know this is done correctly?</span>
+          <textarea id="elicit-criteria" rows="2" placeholder="e.g., All existing tests pass, new feature works on mobile"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="elicit-skip" class="btn btn-sm">Skip</button>
+          <button type="submit" class="btn btn-primary btn-sm">Save &amp; Continue</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Tour Overlay -->
+  <div id="tour-overlay" class="tour-overlay hidden">
+    <div class="tour-backdrop"></div>
+    <div id="tour-tooltip" class="tour-tooltip">
+      <div id="tour-step-indicator" class="tour-step-indicator"></div>
+      <p id="tour-text" class="tour-text"></p>
+      <div class="tour-actions">
+        <button id="tour-skip" class="btn btn-sm">Skip Tour</button>
+        <button id="tour-next" class="btn btn-primary btn-sm">Next</button>
       </div>
     </div>
   </div>

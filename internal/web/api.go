@@ -324,6 +324,59 @@ func handleNew(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// POST /api/update-description
+func handleUpdateDescription(w http.ResponseWriter, r *http.Request) {
+	body := readBody(r)
+	workflow := bodyStr(body, "workflow")
+	appendText := bodyStr(body, "append")
+
+	if workflow == "" || appendText == "" {
+		writeError(w, 400, "workflow and append fields are required")
+		return
+	}
+	if !validateName(workflow) {
+		writeError(w, 400, "invalid workflow name")
+		return
+	}
+
+	wfDir := state.WorkflowDir(workflow)
+	descPath := filepath.Join(wfDir, "description")
+
+	existing, err := os.ReadFile(descPath)
+	if err != nil {
+		writeError(w, 404, "workflow description not found")
+		return
+	}
+
+	updated := strings.TrimRight(string(existing), "\n") + "\n\n---\n\n" + appendText + "\n"
+
+	// Atomic write via temp file + rename
+	tmp, err := os.CreateTemp(wfDir, ".tmp-desc-*")
+	if err != nil {
+		writeError(w, 500, "failed to create temp file")
+		return
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(updated); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		writeError(w, 500, "failed to write description")
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, 500, "failed to write description")
+		return
+	}
+	if err := os.Rename(tmpPath, descPath); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, 500, "failed to update description")
+		return
+	}
+
+	writeJSONObj(w, map[string]string{"ok": "true"})
+}
+
 // ── Project API ─────────────────────────────────────────────────────────────
 
 // GET /api/projects

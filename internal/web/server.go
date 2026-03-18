@@ -54,6 +54,9 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("POST /api/check-file", handleCheckFile)
 	mux.HandleFunc("POST /api/check-advance", handleCheckAdvance)
 
+	// Description update (elicitation)
+	mux.HandleFunc("POST /api/update-description", handleUpdateDescription)
+
 	// Repos
 	mux.HandleFunc("POST /api/repos/add", handleReposAdd)
 	mux.HandleFunc("POST /api/repos/remove", handleReposRemove)

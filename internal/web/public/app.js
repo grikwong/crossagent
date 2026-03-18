@@ -9,6 +9,9 @@ let fitAddon = null;
 let sessionActive = false;
 let activeArtifact = null;
 let resizeTimer = null;
+let resizeFrame = null;
+let lastReportedCols = 0;
+let lastReportedRows = 0;
 let pendingOutputFile = null;   // Track expected output file for auto-advance
 let pendingPhaseName = null;    // Track which phase is running
 let outputPollTimer = null;     // Poll for output file while session runs
@@ -216,32 +219,54 @@ async function suggestProject(workflowName, description) {
       body: JSON.stringify({ description }),
     });
     if (data.suggested_project) {
-      // Show suggestion modal
-      document.getElementById('suggest-project-name').textContent = data.suggested_project;
-      document.getElementById('suggest-matched').textContent = 'Matched: ' + (data.matched_terms || '');
-      document.getElementById('suggest-project-label').textContent = data.suggested_project;
-      document.getElementById('suggest-modal').classList.remove('hidden');
+      // Return a promise that resolves when user clicks Move, Keep, or dismisses
+      return new Promise((resolve) => {
+        document.getElementById('suggest-project-name').textContent = data.suggested_project;
+        document.getElementById('suggest-matched').textContent = 'Matched: ' + (data.matched_terms || '');
+        document.getElementById('suggest-project-label').textContent = data.suggested_project;
+        const modal = document.getElementById('suggest-modal');
+        modal.classList.remove('hidden');
 
-      // Set up move handler
-      const moveBtn = document.getElementById('suggest-move');
-      const keepBtn = document.getElementById('suggest-keep');
-      const modal = document.getElementById('suggest-modal');
+        const moveBtn = document.getElementById('suggest-move');
+        const keepBtn = document.getElementById('suggest-keep');
+        const backdrop = modal.querySelector('.modal-backdrop');
+        let settled = false;
 
-      const cleanup = () => {
-        modal.classList.add('hidden');
-        moveBtn.replaceWith(moveBtn.cloneNode(true));
-        keepBtn.replaceWith(keepBtn.cloneNode(true));
-      };
+        const cleanup = () => {
+          if (settled) return;
+          settled = true;
+          modal.classList.add('hidden');
+          moveBtn.replaceWith(moveBtn.cloneNode(true));
+          keepBtn.replaceWith(keepBtn.cloneNode(true));
+          backdrop.removeEventListener('click', onDismiss);
+          document.removeEventListener('keydown', onEscape, { capture: true });
+        };
 
-      moveBtn.addEventListener('click', async () => {
-        cleanup();
-        await moveWorkflow(workflowName, data.suggested_project);
-        term.writeln(`\x1b[32m  Moved to project "${data.suggested_project}"\x1b[0m\r\n`);
-      }, { once: true });
+        const onDismiss = () => { cleanup(); resolve(); };
 
-      keepBtn.addEventListener('click', () => {
-        cleanup();
-      }, { once: true });
+        const onEscape = (e) => {
+          if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
+            e.stopImmediatePropagation();
+            cleanup();
+            resolve();
+          }
+        };
+
+        document.getElementById('suggest-move').addEventListener('click', async () => {
+          cleanup();
+          await moveWorkflow(workflowName, data.suggested_project);
+          term.writeln(`\x1b[32m  Moved to project "${data.suggested_project}"\x1b[0m\r\n`);
+          resolve();
+        }, { once: true });
+
+        document.getElementById('suggest-keep').addEventListener('click', () => {
+          cleanup();
+          resolve();
+        }, { once: true });
+
+        backdrop.addEventListener('click', onDismiss);
+        document.addEventListener('keydown', onEscape, { capture: true });
+      });
     }
   } catch {
     // Silent — suggestion is non-blocking
@@ -441,6 +466,49 @@ function setGuide(text, type) {
 
 // ── Terminal ────────────────────────────────────────────────────────────────
 
+function fitTerminal(options = {}) {
+  const { notifyPty = false, force = false } = options;
+  if (!term || !fitAddon) return;
+
+  const terminalEl = document.getElementById('terminal');
+  if (!terminalEl || terminalEl.clientWidth === 0 || terminalEl.clientHeight === 0) {
+    return;
+  }
+
+  fitAddon.fit();
+
+  if (!notifyPty || !ws || ws.readyState !== WebSocket.OPEN || !sessionActive) {
+    return;
+  }
+
+  if (term.cols <= 0 || term.rows <= 0) {
+    return;
+  }
+
+  if (!force && term.cols === lastReportedCols && term.rows === lastReportedRows) {
+    return;
+  }
+
+  lastReportedCols = term.cols;
+  lastReportedRows = term.rows;
+  ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+}
+
+function scheduleTerminalFit(options = {}) {
+  clearTimeout(resizeTimer);
+  if (resizeFrame) {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = null;
+  }
+
+  resizeTimer = setTimeout(() => {
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = null;
+      fitTerminal(options);
+    });
+  }, 50);
+}
+
 function initTerminal() {
   term = new Terminal({
     theme: {
@@ -468,7 +536,7 @@ function initTerminal() {
   fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
   term.open(document.getElementById('terminal'));
-  fitAddon.fit();
+  fitTerminal({ force: true });
 
   term.writeln('\x1b[2m  Crossagent Terminal\x1b[0m');
   term.writeln('\x1b[2m  Select or create a workflow, then click the Run button to start.\x1b[0m');
@@ -481,15 +549,19 @@ function initTerminal() {
   });
 
   const resizeObserver = new ResizeObserver(() => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-      fitAddon.fit();
-      if (ws && ws.readyState === WebSocket.OPEN && sessionActive) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
-    }, 100);
+    scheduleTerminalFit({ notifyPty: true });
   });
   resizeObserver.observe(document.getElementById('terminal'));
+
+  window.addEventListener('resize', () => {
+    scheduleTerminalFit({ notifyPty: true });
+  });
+
+  if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+    document.fonts.ready.then(() => {
+      scheduleTerminalFit({ notifyPty: true, force: true });
+    }).catch(() => {});
+  }
 }
 
 // ── WebSocket ───────────────────────────────────────────────────────────────
@@ -518,6 +590,7 @@ function connectWS() {
         sessionActive = true;
         setTerminalStatus('running', `Running — PID ${msg.pid}`);
         updateRunButton();
+        scheduleTerminalFit({ notifyPty: true, force: true });
         break;
       case 'exit':
         sessionActive = false;
@@ -1014,15 +1087,18 @@ async function removeDirectory(dirPath) {
 }
 
 async function createWorkflow(name, repo, description, addDirs, project) {
+  const errorBanner = document.getElementById('new-form-error');
   try {
     const data = await api('/new', {
       method: 'POST',
       body: JSON.stringify({ name, repo, description, addDirs, project }),
     });
     if (data.error) {
-      alert(data.error);
-      return;
+      errorBanner.textContent = data.error;
+      errorBanner.classList.remove('hidden');
+      return false;
     }
+    errorBanner.classList.add('hidden');
     term.clear();
     term.writeln(`\x1b[32m  Workflow "${name}" created.\x1b[0m`);
     term.writeln(`\x1b[2m  Click "Run Plan" to start the planning phase.\x1b[0m\r\n`);
@@ -1034,8 +1110,15 @@ async function createWorkflow(name, repo, description, addDirs, project) {
     if (!project || project === 'default') {
       await suggestProject(name, description);
     }
+
+    // Show elicitation modal
+    await showElicitation(name);
+
+    return true;
   } catch (err) {
-    alert(err.message || 'Failed to create workflow');
+    errorBanner.textContent = err.message || 'Failed to create workflow';
+    errorBanner.classList.remove('hidden');
+    return false;
   }
 }
 
@@ -1098,6 +1181,186 @@ function esc(str) {
 
 function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 
+function setFieldError(input, errorEl, message) {
+  if (message) {
+    errorEl.textContent = message;
+    errorEl.classList.add('visible');
+    input.classList.add('field-invalid');
+  } else {
+    errorEl.textContent = '';
+    errorEl.classList.remove('visible');
+    input.classList.remove('field-invalid');
+  }
+}
+
+function clearNewFormErrors() {
+  document.getElementById('new-form-error').classList.add('hidden');
+  document.querySelectorAll('#new-form .field-error').forEach(el => {
+    el.textContent = '';
+    el.classList.remove('visible');
+  });
+  document.querySelectorAll('#new-form .field-invalid').forEach(el => {
+    el.classList.remove('field-invalid');
+  });
+}
+
+// ── Elicitation ─────────────────────────────────────────────────────────────
+
+function showElicitation(workflowName) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('elicit-modal');
+    const form = document.getElementById('elicit-form');
+    const skipBtn = document.getElementById('elicit-skip');
+    const backdrop = modal.querySelector('.modal-backdrop');
+    let settled = false;
+
+    modal.classList.remove('hidden');
+
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      modal.classList.add('hidden');
+      form.reset();
+      skipBtn.removeEventListener('click', onSkip);
+      form.removeEventListener('submit', onSubmit);
+      backdrop.removeEventListener('click', onDismiss);
+      document.removeEventListener('keydown', onEscape, { capture: true });
+    };
+
+    const onDismiss = () => { cleanup(); resolve(); };
+
+    const onEscape = (e) => {
+      if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
+        e.stopImmediatePropagation();
+        cleanup();
+        resolve();
+      }
+    };
+
+    const onSkip = () => {
+      cleanup();
+      resolve();
+    };
+
+    const onSubmit = async (e) => {
+      e.preventDefault();
+
+      const scope = document.getElementById('elicit-scope').value.trim();
+      const style = document.querySelector('input[name="elicit-style"]:checked')?.value || '';
+      const constraints = document.getElementById('elicit-constraints').value.trim();
+      const criteria = document.getElementById('elicit-criteria').value.trim();
+
+      // Build addendum from non-empty fields
+      const parts = ['## Implementation Guidance (from elicitation)'];
+      if (scope) parts.push(`**Scope**: ${scope}`);
+      if (style) parts.push(`**Style**: ${style === 'surgical' ? 'Surgical — minimal changes, follow existing code style' : 'Holistic — refactor and improve surrounding code as needed'}`);
+      if (constraints) parts.push(`**Constraints**: ${constraints}`);
+      if (criteria) parts.push(`**Acceptance Criteria**: ${criteria}`);
+
+      if (parts.length > 1) {
+        try {
+          await api('/update-description', {
+            method: 'POST',
+            body: JSON.stringify({ workflow: workflowName, append: parts.join('\n') }),
+          });
+        } catch {
+          // Non-fatal — elicitation is best-effort
+        }
+      }
+
+      cleanup();
+      resolve();
+    };
+
+    skipBtn.addEventListener('click', onSkip);
+    form.addEventListener('submit', onSubmit);
+    backdrop.addEventListener('click', onDismiss);
+    document.addEventListener('keydown', onEscape, { capture: true });
+  });
+}
+
+// ── Tour System ─────────────────────────────────────────────────────────────
+
+const TOUR_STEPS = [
+  { target: '#new-btn', text: 'Click here to create a new workflow. A workflow is a task or feature you want the AI to plan, review, implement, and verify.', position: 'bottom' },
+  { target: '#workflow-select', text: 'Switch between your workflows here. Each workflow tracks its own progress through the four phases.', position: 'bottom' },
+  { target: '#project-select', text: 'Filter workflows by project. Projects group related workflows together.', position: 'bottom' },
+  { target: '#phase-tracker', text: 'Your workflow progresses through 4 phases: Plan → Review → Implement → Verify. Click a completed phase to replay its chat history.', position: 'right' },
+  { target: '#run-phase-btn', text: 'Click this to launch the current phase. The AI agent will work in the terminal below.', position: 'right' },
+  { target: '#artifact-list', text: 'View the output of each phase here — plans, reviews, and verification reports rendered as markdown.', position: 'right' },
+  { target: '#terminal-panel', text: 'This is where AI agents execute. You\'ll see their progress in real time.', position: 'left' },
+];
+
+let tourStep = 0;
+
+function startTour() {
+  tourStep = 0;
+  const overlay = document.getElementById('tour-overlay');
+  overlay.classList.remove('hidden');
+  showTourStep();
+}
+
+function showTourStep() {
+  if (tourStep >= TOUR_STEPS.length) {
+    endTour();
+    return;
+  }
+
+  // Clear previous highlights
+  document.querySelectorAll('.tour-highlight').forEach(el => el.classList.remove('tour-highlight'));
+
+  const step = TOUR_STEPS[tourStep];
+  const target = document.querySelector(step.target);
+
+  if (!target || target.getBoundingClientRect().width === 0) {
+    // Skip invisible elements
+    tourStep++;
+    showTourStep();
+    return;
+  }
+
+  target.classList.add('tour-highlight');
+
+  document.getElementById('tour-step-indicator').textContent = `Step ${tourStep + 1} of ${TOUR_STEPS.length}`;
+  document.getElementById('tour-text').textContent = step.text;
+
+  const nextBtn = document.getElementById('tour-next');
+  nextBtn.textContent = tourStep === TOUR_STEPS.length - 1 ? 'Done' : 'Next';
+
+  // Position tooltip near target
+  const tooltip = document.getElementById('tour-tooltip');
+  const rect = target.getBoundingClientRect();
+  tooltip.style.position = 'fixed';
+
+  switch (step.position) {
+    case 'bottom':
+      tooltip.style.top = (rect.bottom + 12) + 'px';
+      tooltip.style.left = Math.max(8, rect.left) + 'px';
+      break;
+    case 'right':
+      tooltip.style.top = rect.top + 'px';
+      tooltip.style.left = (rect.right + 12) + 'px';
+      break;
+    case 'left':
+      tooltip.style.top = rect.top + 'px';
+      tooltip.style.left = Math.max(8, rect.left - 340) + 'px';
+      break;
+    default:
+      tooltip.style.top = (rect.bottom + 12) + 'px';
+      tooltip.style.left = rect.left + 'px';
+  }
+}
+
+function nextTourStep() {
+  tourStep++;
+  showTourStep();
+}
+
+function endTour() {
+  document.querySelectorAll('.tour-highlight').forEach(el => el.classList.remove('tour-highlight'));
+  document.getElementById('tour-overlay').classList.add('hidden');
+}
+
 // ── Event Binding ───────────────────────────────────────────────────────────
 
 function bindEvents() {
@@ -1130,24 +1393,66 @@ function bindEvents() {
   });
   document.getElementById('new-cancel').addEventListener('click', () => {
     document.getElementById('new-modal').classList.add('hidden');
+    clearNewFormErrors();
   });
+
+  // Real-time name validation
+  const NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+  document.getElementById('new-name').addEventListener('input', () => {
+    const nameInput = document.getElementById('new-name');
+    const nameError = document.getElementById('new-name-error');
+    const val = nameInput.value.trim();
+    if (!val) {
+      setFieldError(nameInput, nameError, '');
+    } else if (!NAME_REGEX.test(val)) {
+      setFieldError(nameInput, nameError, 'Name can only contain letters, numbers, hyphens, underscores, and dots. Must start with a letter or number. No spaces.');
+    } else {
+      setFieldError(nameInput, nameError, '');
+    }
+  });
+
   document.getElementById('new-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const name = document.getElementById('new-name').value.trim();
+    const nameInput = document.getElementById('new-name');
+    const descInput = document.getElementById('new-desc');
+    const nameError = document.getElementById('new-name-error');
+    const descError = document.getElementById('new-desc-error');
+    const name = nameInput.value.trim();
     const repo = document.getElementById('new-repo').value.trim();
-    const desc = document.getElementById('new-desc').value.trim();
+    const desc = descInput.value.trim();
     const dirsText = document.getElementById('new-dirs').value.trim();
     const project = document.getElementById('new-project').value;
-    if (!name || !desc) return;
+
+    // Validate
+    let valid = true;
+    if (!name) {
+      setFieldError(nameInput, nameError, 'Name is required.');
+      valid = false;
+    } else if (!NAME_REGEX.test(name)) {
+      setFieldError(nameInput, nameError, 'Name can only contain letters, numbers, hyphens, underscores, and dots. Must start with a letter or number. No spaces.');
+      valid = false;
+    } else {
+      setFieldError(nameInput, nameError, '');
+    }
+    if (!desc) {
+      setFieldError(descInput, descError, 'Description is required.');
+      valid = false;
+    } else {
+      setFieldError(descInput, descError, '');
+    }
+    if (!valid) return;
 
     // Parse additional directories (one per line, skip empties)
     const addDirs = dirsText
       ? dirsText.split('\n').map(d => d.trim()).filter(Boolean)
       : undefined;
 
-    await createWorkflow(name, repo || undefined, desc, addDirs, project || undefined);
-    document.getElementById('new-modal').classList.add('hidden');
-    document.getElementById('new-form').reset();
+    const success = await createWorkflow(name, repo || undefined, desc, addDirs, project || undefined);
+    if (success) {
+      document.getElementById('new-modal').classList.add('hidden');
+      document.getElementById('new-form').reset();
+      clearNewFormErrors();
+    }
   });
 
   // Project filter
@@ -1191,18 +1496,36 @@ function bindEvents() {
     document.getElementById('adddir-form').reset();
   });
 
-  // Close modals with backdrop click
+  // Close modals with backdrop click (skip promise-backed modals — they manage their own dismiss)
+  const promiseModals = new Set(['suggest-modal', 'elicit-modal']);
   document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
     backdrop.addEventListener('click', () => {
-      backdrop.closest('.modal').classList.add('hidden');
+      const modal = backdrop.closest('.modal');
+      if (!promiseModals.has(modal.id)) {
+        modal.classList.add('hidden');
+      }
     });
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+      // Close only the topmost visible modal (skip promise-backed modals — they handle Escape themselves)
+      const openModals = [...document.querySelectorAll('.modal:not(.hidden)')].filter(m => !promiseModals.has(m.id));
+      if (openModals.length > 0) {
+        openModals[openModals.length - 1].classList.add('hidden');
+      }
+      // Close tour if active
+      const tourOverlay = document.getElementById('tour-overlay');
+      if (tourOverlay && !tourOverlay.classList.contains('hidden')) {
+        endTour();
+      }
     }
   });
+
+  // Tour controls
+  document.getElementById('tour-next').addEventListener('click', nextTourStep);
+  document.getElementById('tour-skip').addEventListener('click', endTour);
+  document.getElementById('tour-btn').addEventListener('click', startTour);
 
   // Poll for state updates every 5s when idle
   setInterval(() => {
@@ -1219,4 +1542,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   await fetchProjects();
   await fetchList();
   await fetchStatus();
+
+  // Start tour on every app launch (user requirement: "tour the user on every launched of the app")
+  // Users can skip immediately via "Skip Tour" button; "?" button in topbar replays it anytime
+  startTour();
 });
