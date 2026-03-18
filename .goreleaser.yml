@@ -1,0 +1,51 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: crossagent
+    main: ./cmd/crossagent
+    binary: crossagent
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: crossagent
+    format: tar.gz
+    name_template: "crossagent_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+brews:
+  - name: crossagent
+    repository:
+      owner: grikwong
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/grikwong/crossagent"
+    description: "Cross-model AI agent orchestrator with browser-based Web UI"
+    license: "AGPL-3.0-or-later"
+    install: |
+      bin.install "crossagent"
+    test: |
+      system "#{bin}/crossagent", "version"

@@ -1,10 +1,12 @@
 BINARY := crossagent
 PREFIX ?= /usr/local
+VERSION ?= dev
+LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 
 .PHONY: build test install uninstall check start clean
 
 build:
-	go build -o $(BINARY) ./cmd/crossagent
+	go build $(LDFLAGS) -o $(BINARY) ./cmd/crossagent
 
 test: build
 	go test ./...

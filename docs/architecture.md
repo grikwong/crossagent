@@ -1,82 +1,132 @@
-# Crossagent — Architecture Decision Record
+# Crossagent — Architecture
 
-> Date: 2026-03-11 | Status: Implemented
+> Date: 2026-03-18 | Status: Implemented
 
-## Decision
+## System Overview
 
-Crossagent uses a **layered architecture**:
+Crossagent is a cross-model AI agent orchestrator that routes each workflow phase to a different AI model. The default phase mapping is:
 
-1. **Core** — Go packages (`internal/`) provide state management, agent orchestration, prompt generation, and verdict judging. Bash CLI (`crossagent`) handles CLI commands and orchestration (being incrementally replaced by Go).
-2. **Integration** — Machine-readable CLI output (`--json` on `status`, `list`, `phase-cmd`, `agents`).
-3. **Web UI** — Local Node.js companion (`web/`). Embeds terminals, renders artifacts, manages workflows visually.
+1. **Plan** — Claude Code
+2. **Review** — Codex CLI
+3. **Implement** — Claude Code
+4. **Verify** — Codex CLI
 
-The Go binary provides the full CLI with typed state management, ordered JSON output, and bash-compatible formatting. The bash CLI is retained during the transition but the Go binary handles all command dispatch. The Web UI is the primary operator experience. All layers are shipped.
+Phase assignments are configurable per workflow via the `agents assign` command.
 
-## Why This Architecture
+## Layered Architecture
 
-Two separate questions led here:
-
-1. **Best stack for embedded interactive terminals?**
-   Node.js + `node-pty` + `xterm.js` — same stack VS Code uses. Nothing else comes close for PTY embedding.
-
-2. **Best product architecture given what exists?**
-   Keep bash as the core engine. Don't rewrite working orchestration into Node. Add the GUI as a companion that consumes the CLI's structured output.
-
-This avoids rewrite risk while using the strongest PTY tooling where it matters.
-
-## Technology Assessment
-
-| Stack | PTY | Multi-panel | Build Time | Fit |
-|-------|-----|-------------|------------|-----|
-| **Node.js + xterm.js** | Excellent | Excellent | 1-2 wk | **Best** |
-| Electron | Excellent | Excellent | 2-3 wk | Runner-up |
-| Go + Bubbletea | Fair* | Good | 2-3 wk | Best TUI |
-| Tauri | Good | Excellent | 3-5 wk | Overengineered |
-| Swift + SwiftUI | Fair | Good | 4-6 wk | Mac only |
-
-*Uses suspend/exec pattern, not embedding
-
-## PTY Ownership Boundary
-
-The UI embeds interactive `claude`/`codex` sessions. The **UI process owns the PTY**, but prompt generation and phase gating live in bash.
-
-Resolution: `phase-cmd --json` returns everything the UI needs to spawn the session itself:
-
-```json
-{
-  "command": "claude",
-  "args": ["--add-dir", "/path/to/wf-dir"],
-  "cwd": "/path/to/repo",
-  "prompt": "Read and follow the instructions at /path/to/prompts/plan.md",
-  "output_file": "/path/to/.crossagent/workflows/name/plan.md",
-  "phase": 1
-}
+```
+┌─────────────────────────────────────────────────────────┐
+│  Web UI Layer                                           │
+│  Embedded Go HTTP/WebSocket server + vanilla JS frontend│
+│  internal/web/                                          │
+├─────────────────────────────────────────────────────────┤
+│  Integration Layer                                      │
+│  --json output on status, list, phase-cmd, agents       │
+├─────────────────────────────────────────────────────────┤
+│  Core Layer                                             │
+│  Go packages: state, agent, prompt, judge, cli          │
+│  cmd/crossagent/main.go: CLI entry point                │
+└─────────────────────────────────────────────────────────┘
 ```
 
-UI flow:
-1. Call `crossagent phase-cmd <phase> --json` to get launch config
-2. Spawn the command in its own PTY (embedded in xterm.js)
-3. When session ends, call `crossagent advance` or check for output file
-4. Read updated state via `crossagent status --json`
+### Core Layer
 
-No logic duplication. Bash owns orchestration. UI owns presentation and PTY lifecycle.
+Go packages in `internal/` provide all business logic:
 
-## Data Ownership
+- **`internal/state/`** — Config, workflow, project, and memory file operations. Uses atomic writes (temp file + rename) and file locking (`syscall.Flock`) for concurrent access safety.
+- **`internal/agent/`** — Agent registry, phase assignments, CLI launcher. Supports `claude` and `codex` adapters. Builds launch arguments including `--add-dir` flags and sandbox settings.
+- **`internal/cli/`** — JSON types, ordered serialization, hybrid formatting for CLI output.
+- **`internal/prompt/`** — Template-based prompt generation using embedded Go templates (`embed.FS`). Injects three-tier memory context into each phase prompt.
+- **`internal/judge/`** — Verdict parsing for review and verify outputs. Handles case-insensitive matching across various phrasings.
 
-| Data | Owner | Storage |
-|------|-------|---------|
-| Workflow state | Go/Bash CLI | `~/.crossagent/` files |
-| Markdown artifacts | Go/Bash CLI | `~/.crossagent/workflows/<name>/*.md` |
-| Agent definitions | Go/Bash CLI | `~/.crossagent/agents/` |
-| Prompt generation | Go/Bash CLI | `~/.crossagent/workflows/<name>/prompts/` |
-| PTY sessions | Web UI | Transient (in-memory) |
-| Presentation state | Web UI | Transient (browser) |
+The CLI entry point (`cmd/crossagent/main.go`) handles all command dispatch.
+
+### Integration Layer
+
+Machine-readable `--json` output on `status`, `list`, `phase-cmd`, and `agents` commands. This layer enables the Web UI and external tooling to consume CLI output programmatically.
+
+### Web UI Layer
+
+An embedded Go HTTP/WebSocket server in `internal/web/`:
+
+- **`embed.go`** — `go:embed all:public` directive bundles the vanilla JS frontend into the binary.
+- **`server.go`** — HTTP router with API routes and static file serving.
+- **`api.go`** — REST API handlers. These shell out to the `crossagent` binary for operations that produce complex JSON, guaranteeing identical output between CLI and API.
+- **`terminal.go`** — WebSocket + PTY handler using `creack/pty` and `gorilla/websocket`. Manages interactive terminal sessions for each phase agent.
+
+The frontend (`internal/web/public/`) is plain HTML, CSS, and vanilla JS with no build step. Browser dependencies (xterm.js, xterm-addon-fit, marked) are vendored in `public/vendor/`.
+
+## Data Architecture
+
+All state is stored as plain files in `~/.crossagent/`:
+
+```
+~/.crossagent/
+├── current                          # Active workflow name
+├── agents/<name>                    # Custom static agent definitions
+├── projects/                        # Project definitions
+│   ├── default/                     #   Default project (auto-created)
+│   │   └── memory/                  #   Project-scoped memory
+│   └── <name>/                      #   User-created projects
+│       └── memory/
+├── memory/                          # Global memory (cross-project)
+│   ├── global-context.md
+│   └── lessons-learned.md
+└── workflows/<name>/
+    ├── config                       # Key-value config
+    ├── description                  # Feature description
+    ├── phase                        # Current phase (1-4 or "done")
+    ├── memory.md                    # Workflow-scoped memory
+    ├── plan.md / review.md / verify.md  # Phase artifacts
+    └── prompts/                     # Generated prompt files
+```
+
+### Three-Tier Memory System
+
+1. **Workflow memory** (`memory.md`) — per-workflow decisions, findings, session notes.
+2. **Project memory** (`~/.crossagent/projects/<name>/memory/`) — project-specific patterns and conventions shared across workflows.
+3. **Global memory** (`~/.crossagent/memory/`) — cross-project patterns and accumulated knowledge.
+
+Memory flows into prompts via `prompt.BuildMemoryContext()` and `prompt.BuildMemoryUpdateInstructions()`.
+
+### File Safety
+
+- **Atomic writes** — all state mutations use a temp file + rename pattern to prevent partial-write corruption.
+- **File locking** — `syscall.Flock` for concurrent `SetConf` calls.
+
+## WebSocket + PTY Protocol
+
+The Web UI spawns interactive agent sessions via WebSocket:
+
+1. Client fetches launch params: `GET /api/phase-cmd/{phase}` → returns command, args, cwd, prompt.
+2. Client sends `spawn` message → server creates a PTY via `creack/pty` and starts the agent process.
+3. Bidirectional streaming: `input` (client → server), `output` (server → client).
+4. Client can send `resize` (terminal dimensions) and `kill` (terminate session).
+5. Server sends `spawned`, `exit`, and `error` messages for lifecycle events.
+6. Chat history is captured per-session with a 50MB buffer cap, flushed atomically on exit/kill/disconnect.
+
+## Agent Adapters
+
+Two built-in adapters: `claude` (Claude Code CLI) and `codex` (Codex CLI).
+
+Each adapter constructs launch arguments including:
+- `--add-dir` flags for the workflow directory and additional directories
+- Sandbox settings controlling filesystem write access
+- The prompt file path pointing to the generated phase prompt
+
+Custom agents can be registered via `crossagent agents add` with an adapter type and optional custom command.
+
+## CI/CD Pipeline
+
+- **CI** (`.github/workflows/ci.yml`) — `go vet`, build, unit tests, integration tests, GoReleaser config validation.
+- **Security** (`.github/workflows/security.yml`) — `govulncheck`, `go vet`, `staticcheck` with pinned versions.
+- **Release** (`.github/workflows/release.yml`) — `release-please` for automated semantic versioning + GoReleaser for cross-platform binary builds and Homebrew formula updates.
 
 ## Architectural Boundaries
 
-1. Go binary handles CLI command dispatch and state management; bash CLI retained during transition
-2. Web UI never writes to `~/.crossagent/` directly — it calls `crossagent advance`/`done`
-3. Web UI uses `phase-cmd --json` for launch params — no duplicated phase logic
-4. Web UI exposes agent management through CLI commands, not direct config writes
-5. Every workflow action remains possible via CLI alone
-6. Go and bash state formats are backward-compatible — same key=value configs, same file layout
+1. The Go binary handles all command dispatch and state management.
+2. The Web UI never writes to `~/.crossagent/` directly — it calls `crossagent advance`/`done` for state changes.
+3. The Web UI uses `phase-cmd --json` for launch params — no duplicated phase logic.
+4. The Web UI exposes agent management through CLI commands, not direct config writes.
+5. Every workflow action remains possible via CLI alone.

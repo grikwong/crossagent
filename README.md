@@ -5,7 +5,11 @@
 
   [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](./LICENSE)
   [![Security Check](https://github.com/grikwong/crossagent/actions/workflows/security.yml/badge.svg)](https://github.com/grikwong/crossagent/actions/workflows/security.yml)
+  [![Release](https://img.shields.io/github/v/release/grikwong/crossagent)](https://github.com/grikwong/crossagent/releases)
+  [![Homebrew](https://img.shields.io/badge/homebrew-crossagent-orange)](https://github.com/grikwong/homebrew-tap)
 </div>
+
+[Installation](#installation) | [Troubleshooting](#troubleshooting) | [Architecture](#architecture)
 
 ```
 ┌────────┐  plan.md  ┌────────┐  review.md  ┌────────┐  changes ┌────────┐
@@ -42,31 +46,39 @@ Every workflow builds knowledge. Crossagent maintains **three tiers of persisten
 
 Crossagent runs on top of CLI tools that use **subscription-based plans** (Claude Code via Claude Pro/Max, Codex CLI via ChatGPT Pro), not per-token API billing. No surprise invoices, no cost anxiety mid-workflow. You know what you're paying before you start.
 
-## Quick Start
+## Installation
 
 ### Prerequisites
 
-- **Go 1.22+**
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and [Codex CLI](https://github.com/openai/codex) — both authenticated
 
-### Install
+### Install via Homebrew (macOS / Linux)
+
+```sh
+brew tap grikwong/tap
+brew install crossagent
+```
+
+### Install from Source
+
+Requires **Go 1.22+**.
 
 ```bash
-git clone <this-repo> ~/tools/crossagent
-cd ~/tools/crossagent
-make build           # Compiles the single binary (includes embedded Web UI)
+git clone https://github.com/grikwong/crossagent.git
+cd crossagent
+make install           # Builds and installs to /usr/local/bin (may prompt for sudo)
 ```
 
 <details>
-<summary>Optional: install CLI to PATH, Go install, Windows</summary>
+<summary>More install options</summary>
 
 ```bash
-make install                        # /usr/local/bin (may prompt for sudo)
+make build                          # Compile without installing
 make install PREFIX=$HOME/.local    # User-local (~/.local/bin)
 go install github.com/grikwong/crossagent/cmd/crossagent@latest
 ```
 
-**Windows:** Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/) and follow the steps above.
+**Windows:** Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/) and follow the steps above. Native Windows is not supported (Unix PTY dependency).
 </details>
 
 ### Launch
@@ -203,7 +215,7 @@ Crossagent is free, open source, and local-first. It is usable today but should 
 
 ## Architecture
 
-Layered design — see [docs/architecture.md](docs/architecture.md) for the full decision record.
+Crossagent is a single Go binary with an embedded HTTP/WebSocket server and vanilla JS frontend. See [docs/architecture.md](docs/architecture.md) for the full architecture document.
 
 | Layer | Role | Location |
 |-------|------|----------|
@@ -228,18 +240,28 @@ crossagent/
 │   ├── judge/                   # Verdict parsing for review & verify
 │   └── web/                     # Embedded HTTP/WebSocket server + frontend assets
 │       ├── server.go            # HTTP server setup, routes, static file serving
-│       ├── api.go               # REST API handlers (22 endpoints)
+│       ├── api.go               # REST API handlers
 │       ├── terminal.go          # WebSocket + PTY handler, chat history capture
 │       ├── embed.go             # go:embed directive for frontend assets
 │       └── public/              # Vanilla JS frontend (HTML, CSS, JS, vendored libs)
 ├── web/                         # Legacy Node.js server (retained for reference)
 ├── test/                        # Integration tests
-├── docs/                        # Architecture decision records
+├── docs/                        # Architecture document
 └── Makefile
 ```
 
 State is stored in `~/.crossagent/` — workflows, projects, agents, and memory tiers are all plain files.
 </details>
+
+## Troubleshooting
+
+**Agent CLI not found** — Crossagent requires `claude` and `codex` CLI tools to be installed and authenticated. Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex CLI](https://github.com/openai/codex), then run each once to authenticate.
+
+**Web UI not loading** — Check if port 3456 is already in use: `lsof -i :3456`. Use `CROSSAGENT_PORT=8080 crossagent serve` to specify an alternate port. If the binary was built without the embedded frontend, rebuild with `make build`.
+
+**Permission errors on `~/.crossagent/`** — Ensure the directory is owned by your user: `ls -la ~/.crossagent`. Fix with `chown -R $(whoami) ~/.crossagent` if needed.
+
+**PTY session failures** — PTY allocation requires a Unix-like OS (macOS or Linux). Windows is not natively supported; use WSL. If PTY errors persist, ensure your terminal emulator supports pseudo-terminals.
 
 ## Development
 

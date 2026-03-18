@@ -21,7 +21,7 @@ import (
 	"github.com/grikwong/crossagent/internal/web"
 )
 
-const Version = "1.0.0"
+var Version = "dev"
 
 // ── ANSI Colors ─────────────────────────────────────────────────────────────
 
@@ -851,6 +851,7 @@ func cmdServe(args []string) {
 		}()
 	}
 
+	web.AppVersion = Version
 	fmt.Fprintf(os.Stderr, "\n  Crossagent UI running at http://localhost:%s\n\n", port)
 	if err := web.Serve(addr); err != nil {
 		die(fmt.Sprintf("Server failed: %v", err))

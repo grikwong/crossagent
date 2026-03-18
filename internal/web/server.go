@@ -17,6 +17,9 @@ func NewMux() *http.ServeMux {
 
 	// ── API routes ──────────────────────────────────────────────────────
 
+	// Version
+	mux.HandleFunc("GET /api/version", handleVersion)
+
 	// Status & list
 	mux.HandleFunc("GET /api/status", handleStatus)
 	mux.HandleFunc("GET /api/list", handleList)

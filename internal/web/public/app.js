@@ -1618,6 +1618,14 @@ function bindEvents() {
 // ── Init ────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Fetch and display version
+  try {
+    const res = await fetch('/api/version');
+    const data = await res.json();
+    const el = document.getElementById('app-version');
+    if (el && data.version) el.textContent = 'v' + data.version;
+  } catch (_) { /* version display is best-effort */ }
+
   initTerminal();
   connectWS();
   bindEvents();

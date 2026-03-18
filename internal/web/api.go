@@ -14,6 +14,10 @@ import (
 	"github.com/grikwong/crossagent/internal/state"
 )
 
+// AppVersion is set by the CLI entry point before serving. It is returned
+// by the /api/version endpoint so the frontend can display the current version.
+var AppVersion = "dev"
+
 // ── Validation ──────────────────────────────────────────────────────────────
 
 var (
@@ -714,6 +718,11 @@ func handleReposAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+
+// GET /api/version
+func handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSONObj(w, map[string]string{"version": AppVersion})
 }
 
 // POST /api/repos/remove

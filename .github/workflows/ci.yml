@@ -31,6 +31,12 @@ jobs:
       - name: Integration tests
         run: bash test/integration_test.sh ./crossagent
 
+      - name: Validate GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
+
   web:
     runs-on: ubuntu-latest
     steps:
