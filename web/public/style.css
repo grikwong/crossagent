@@ -536,31 +536,36 @@ input.field-invalid, textarea.field-invalid {
 .tour-overlay {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: 2147483000;
+  isolation: isolate;
+  pointer-events: none;
 }
 
 .tour-backdrop {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
+  pointer-events: auto;
 }
 
 .tour-highlight {
   position: relative;
-  z-index: 201;
+  z-index: 2147482999;
   box-shadow: 0 0 0 4px var(--accent), 0 0 20px rgba(88, 166, 255, 0.3);
   border-radius: var(--radius);
 }
 
 .tour-tooltip {
   position: fixed;
-  z-index: 202;
+  z-index: 2147483002;
   background: var(--bg-surface);
   border: 1px solid var(--accent);
   border-radius: 8px;
   padding: 16px;
   max-width: 320px;
   min-width: 240px;
+  pointer-events: auto;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
 }
 
 .tour-step-indicator {

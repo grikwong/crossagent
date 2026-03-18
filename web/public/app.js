@@ -12,6 +12,9 @@ let resizeTimer = null;
 let resizeFrame = null;
 let lastReportedCols = 0;
 let lastReportedRows = 0;
+let syncOutputActive = false;
+let syncOutputBuffer = '';
+let syncOutputRemainder = '';
 let pendingOutputFile = null;   // Track expected output file for auto-advance
 let pendingPhaseName = null;    // Track which phase is running
 let outputPollTimer = null;     // Poll for output file while session runs
@@ -466,6 +469,82 @@ function setGuide(text, type) {
 
 // ── Terminal ────────────────────────────────────────────────────────────────
 
+const SYNC_OUTPUT_START = '\x1b[?2026h';
+const SYNC_OUTPUT_END = '\x1b[?2026l';
+
+function matchingTerminalMarkerSuffix(text) {
+  const maxLen = Math.max(SYNC_OUTPUT_START.length, SYNC_OUTPUT_END.length) - 1;
+  const limit = Math.min(maxLen, text.length);
+
+  for (let len = limit; len > 0; len--) {
+    const suffix = text.slice(-len);
+    if (SYNC_OUTPUT_START.startsWith(suffix) || SYNC_OUTPUT_END.startsWith(suffix)) {
+      return len;
+    }
+  }
+
+  return 0;
+}
+
+function writeTerminalOutput(data) {
+  if (!term || !data) return;
+
+  let text = syncOutputRemainder + data;
+  syncOutputRemainder = '';
+
+  while (text) {
+    if (!syncOutputActive) {
+      const startIdx = text.indexOf(SYNC_OUTPUT_START);
+      if (startIdx === -1) {
+        const suffixLen = matchingTerminalMarkerSuffix(text);
+        const safeText = suffixLen > 0 ? text.slice(0, -suffixLen) : text;
+        if (safeText) term.write(safeText);
+        syncOutputRemainder = suffixLen > 0 ? text.slice(-suffixLen) : '';
+        return;
+      }
+
+      if (startIdx > 0) {
+        term.write(text.slice(0, startIdx));
+      }
+
+      syncOutputActive = true;
+      text = text.slice(startIdx + SYNC_OUTPUT_START.length);
+      continue;
+    }
+
+    const endIdx = text.indexOf(SYNC_OUTPUT_END);
+    if (endIdx === -1) {
+      const suffixLen = matchingTerminalMarkerSuffix(text);
+      const safeText = suffixLen > 0 ? text.slice(0, -suffixLen) : text;
+      if (safeText) syncOutputBuffer += safeText;
+      syncOutputRemainder = suffixLen > 0 ? text.slice(-suffixLen) : '';
+      return;
+    }
+
+    syncOutputBuffer += text.slice(0, endIdx);
+    if (syncOutputBuffer) {
+      term.write(syncOutputBuffer);
+      syncOutputBuffer = '';
+    }
+    syncOutputActive = false;
+    text = text.slice(endIdx + SYNC_OUTPUT_END.length);
+  }
+}
+
+function flushTerminalOutput() {
+  if (!term) return;
+
+  if (syncOutputActive && (syncOutputRemainder || syncOutputBuffer)) {
+    term.write(syncOutputBuffer + syncOutputRemainder);
+  } else if (syncOutputRemainder) {
+    term.write(syncOutputRemainder);
+  }
+
+  syncOutputActive = false;
+  syncOutputBuffer = '';
+  syncOutputRemainder = '';
+}
+
 function fitTerminal(options = {}) {
   const { notifyPty = false, force = false } = options;
   if (!term || !fitAddon) return;
@@ -584,7 +663,7 @@ function connectWS() {
     }
     switch (msg.type) {
       case 'output':
-        term.write(msg.data);
+        writeTerminalOutput(msg.data);
         break;
       case 'spawned':
         sessionActive = true;
@@ -593,11 +672,13 @@ function connectWS() {
         scheduleTerminalFit({ notifyPty: true, force: true });
         break;
       case 'exit':
+        flushTerminalOutput();
         sessionActive = false;
         stopOutputPolling();
         handleSessionExit(msg.code);
         break;
       case 'error':
+        flushTerminalOutput();
         term.writeln(`\r\n\x1b[31m  Error: ${msg.message}\x1b[0m\r\n`);
         sessionActive = false;
         stopOutputPolling();
@@ -609,6 +690,7 @@ function connectWS() {
   ws.onerror = () => {};
 
   ws.onclose = () => {
+    flushTerminalOutput();
     document.getElementById('connection-status').classList.remove('connected');
     document.getElementById('connection-status').title = 'Disconnected — reconnecting...';
     sessionActive = false;
