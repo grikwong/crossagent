@@ -61,7 +61,7 @@ brew install crossagent
 
 ### Install from Source
 
-Requires **Go 1.22+**.
+Requires **Go 1.25+**.
 
 ```bash
 git clone https://github.com/grikwong/crossagent.git

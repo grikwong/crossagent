@@ -63,19 +63,19 @@ echo "  Crossagent — Preflight Checks"
 echo "  ─────────────────────────────────────────"
 echo ""
 
-# --- go (1.22+) ---
-printf "  %-28s" "go (1.22+)"
+# --- go (1.25+) ---
+printf "  %-28s" "go (1.25+)"
 if command -v go >/dev/null 2>&1; then
   V="$(go version | awk '{print $3}')"
   MAJOR=$(echo "$V" | sed 's/^go//' | cut -d. -f1)
   MINOR=$(echo "$V" | sed 's/^go//' | cut -d. -f2)
-  if [ "${MAJOR:-0}" -ge 1 ] 2>/dev/null && [ "${MINOR:-0}" -ge 22 ] 2>/dev/null; then
+  if [ "${MAJOR:-0}" -ge 1 ] 2>/dev/null && [ "${MINOR:-0}" -ge 25 ] 2>/dev/null; then
     echo "✓  $V"
   else
-    echo "✗  $V (need 1.22+)"
+    echo "✗  $V (need 1.25+)"
     PASS=false
     MISSING+=("go")
-    MISSING_LABELS+=("go (upgrade to 1.22+)")
+    MISSING_LABELS+=("go (upgrade to 1.25+)")
     MISSING_INSTALL+=("brew install go")
   fi
 else
