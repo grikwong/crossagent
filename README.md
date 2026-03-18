@@ -7,9 +7,9 @@
   [![Security Check](https://github.com/grikwong/crossagent/actions/workflows/security.yml/badge.svg)](https://github.com/grikwong/crossagent/actions/workflows/security.yml)
   [![Release](https://img.shields.io/github/v/release/grikwong/crossagent)](https://github.com/grikwong/crossagent/releases)
   [![Homebrew](https://img.shields.io/badge/homebrew-crossagent-orange)](https://github.com/grikwong/homebrew-tap)
-</div>
 
-[Installation](#installation) | [Troubleshooting](#troubleshooting) | [Architecture](#architecture)
+  [Installation](#installation) | [Troubleshooting](#troubleshooting) | [Architecture](#architecture)
+</div>
 
 ```
 ┌────────┐  plan.md  ┌────────┐  review.md  ┌────────┐  changes ┌────────┐
