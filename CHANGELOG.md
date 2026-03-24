@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.0](https://github.com/grikwong/crossagent/compare/v1.3.0...v1.4.0) (2026-03-24)
+
+
+### Features
+
+* add commit-aware version display for dev builds ([baad60f](https://github.com/grikwong/crossagent/commit/baad60fb4d234960fb134b8558219b8586b984ae))
+* multi-session isolation and retry fix ([e71ea65](https://github.com/grikwong/crossagent/commit/e71ea6576515921d534d9039efa3c25f3c6ecb93))
+
+
+### Bug Fixes
+
+* remove legacy bash parity test, fix ws API ([69f8c43](https://github.com/grikwong/crossagent/commit/69f8c43a0502c014dbe70bf414ac72c0db7713c6))
+* validate /api/version in web test ([b574459](https://github.com/grikwong/crossagent/commit/b5744591c889b6655b1c503973b5dbcb03cff5f4))
+
 ## [1.3.0](https://github.com/grikwong/crossagent/compare/v1.2.0...v1.3.0) (2026-03-18)
 
 
