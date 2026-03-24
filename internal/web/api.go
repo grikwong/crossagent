@@ -745,3 +745,345 @@ func handleReposRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, out)
 }
+
+// ── Workflow-Scoped Handlers ────────────────────────────────────────────────
+// These handlers accept a workflow name in the URL path and pass --workflow
+// to the CLI, avoiding dependence on the global ~/.crossagent/current file.
+
+// requireWorkflowName extracts and validates the {name} path parameter.
+func requireWorkflowName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name := r.PathValue("name")
+	if !validateName(name) {
+		writeError(w, 400, "Invalid workflow name")
+		return "", false
+	}
+	return name, true
+}
+
+// GET /api/workflow/{name}/status
+func handleWorkflowStatus(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	out, err := runCLI("status", "--workflow", name, "--json")
+	if err != nil {
+		writeJSON(w, []byte(fmt.Sprintf(`{"error":%q}`, err.Error())))
+		return
+	}
+	writeJSON(w, out)
+}
+
+// GET /api/workflow/{name}/phase-cmd/{phase}
+func handleWorkflowPhaseCmd(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	phase := r.PathValue("phase")
+	if !validPhases[phase] {
+		writeError(w, 400, fmt.Sprintf("Invalid phase: %s", phase))
+		return
+	}
+
+	args := []string{"phase-cmd", phase, "--workflow", name, "--json"}
+	if sub := r.URL.Query().Get("subphase"); sub != "" {
+		for _, c := range sub {
+			if c < '0' || c > '9' {
+				writeError(w, 400, "subphase must be a number")
+				return
+			}
+		}
+		args = append(args, "--phase", sub)
+	}
+	if r.URL.Query().Get("force") == "true" {
+		args = append(args, "--force")
+	}
+
+	out, err := runCLI(args...)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// GET /api/workflow/{name}/artifact/{type}
+func handleWorkflowArtifact(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	artType := r.PathValue("type")
+	if !validArtifacts[artType] {
+		writeError(w, 400, fmt.Sprintf("Invalid artifact type: %s", artType))
+		return
+	}
+
+	wfDir := state.WorkflowDir(name)
+	filePath := filepath.Join(wfDir, artType+".md")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		writeError(w, 404, "Artifact not found")
+		return
+	}
+
+	writeJSONObj(w, map[string]string{
+		"content": string(data),
+		"path":    filePath,
+	})
+}
+
+// POST /api/workflow/{name}/advance
+func handleWorkflowAdvance(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	if _, err := runCLI("advance", "--workflow", name); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := runCLI("status", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/done
+func handleWorkflowDone(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	if _, err := runCLI("done", "--workflow", name); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := runCLI("status", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/supervise
+func handleWorkflowSupervise(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	args := []string{"supervise", "--workflow", name, "--json"}
+	if phase := bodyStr(body, "phase"); phase != "" {
+		args = append(args, "--phase", phase)
+	}
+	out, err := runCLI(args...)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/revert
+func handleWorkflowRevert(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	targetPhase := bodyStr(body, "target_phase")
+	if targetPhase == "" || len(targetPhase) != 1 || targetPhase[0] < '1' || targetPhase[0] > '4' {
+		writeError(w, 400, "target_phase must be 1-4")
+		return
+	}
+	args := []string{"revert", targetPhase, "--workflow", name, "--json"}
+	if reason := bodyStr(body, "reason"); reason != "" {
+		args = append(args, "--reason", reason)
+	}
+	out, err := runCLI(args...)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/check-file
+func handleWorkflowCheckFile(w http.ResponseWriter, r *http.Request) {
+	// check-file doesn't need workflow scoping itself (it checks an absolute path),
+	// but we provide this route so the frontend consistently uses workflow-scoped URLs.
+	_, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	filePath := bodyStr(body, "path")
+	if filePath == "" {
+		writeError(w, 400, "path required")
+		return
+	}
+	_, err := os.Stat(filePath)
+	writeJSONObj(w, map[string]bool{"exists": err == nil})
+}
+
+// POST /api/workflow/{name}/check-advance
+func handleWorkflowCheckAdvance(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	outputFile := bodyStr(body, "output_file")
+	if outputFile == "" {
+		writeError(w, 400, "output_file required")
+		return
+	}
+
+	if _, err := os.Stat(outputFile); err != nil {
+		writeJSONObj(w, map[string]bool{"advanced": false})
+		return
+	}
+
+	// File exists — advance the specific workflow
+	if _, err := runCLI("advance", "--workflow", name); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+
+	statusOut, err := runCLI("status", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+
+	var statusData any
+	json.Unmarshal(statusOut, &statusData)
+	writeJSONObj(w, map[string]any{
+		"advanced": true,
+		"status":   statusData,
+	})
+}
+
+// GET /api/workflow/{name}/chat-history/{phase}
+func handleWorkflowChatHistory(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	phase := r.PathValue("phase")
+	if !validPhases[phase] {
+		writeError(w, 400, fmt.Sprintf("Invalid phase: %s", phase))
+		return
+	}
+
+	wfDir := state.WorkflowDir(name)
+	logPath := filepath.Join(wfDir, "chat-history", phase+".log")
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		writeJSONObj(w, map[string]bool{"exists": false})
+		return
+	}
+
+	if info.Size() > 5*1024*1024 {
+		writeJSONObj(w, map[string]any{
+			"exists": true,
+			"path":   logPath,
+			"size":   info.Size(),
+			"large":  true,
+		})
+		return
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+
+	writeJSONObj(w, map[string]any{
+		"exists":  true,
+		"content": string(data),
+		"path":    logPath,
+		"size":    info.Size(),
+	})
+}
+
+// GET /api/workflow/{name}/chat-history/{phase}/stream
+func handleWorkflowChatHistoryStream(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	phase := r.PathValue("phase")
+	if !validPhases[phase] {
+		writeError(w, 400, fmt.Sprintf("Invalid phase: %s", phase))
+		return
+	}
+
+	wfDir := state.WorkflowDir(name)
+	logPath := filepath.Join(wfDir, "chat-history", phase+".log")
+
+	if _, err := os.Stat(logPath); err != nil {
+		writeError(w, 404, "Chat history not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	http.ServeFile(w, r, logPath)
+}
+
+// POST /api/workflow/{name}/repos/add
+func handleWorkflowReposAdd(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	dirPath := bodyStr(body, "path")
+	if dirPath == "" {
+		writeError(w, 400, "path required")
+		return
+	}
+
+	if _, err := runCLI("repos", "add", dirPath, "--workflow", name); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := runCLI("status", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/repos/remove
+func handleWorkflowReposRemove(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	dirPath := bodyStr(body, "path")
+	if dirPath == "" {
+		writeError(w, 400, "path required")
+		return
+	}
+
+	if _, err := runCLI("repos", "remove", dirPath, "--workflow", name); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := runCLI("status", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}

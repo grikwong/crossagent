@@ -508,27 +508,7 @@ func cmdNext(args []string) {
 
 func cmdStatus(args []string) {
 	jsonMode := hasFlag(args, "--json")
-
-	name, err := state.GetCurrent()
-	if err != nil {
-		die(err.Error())
-	}
-	if name == "" {
-		if jsonMode {
-			fmt.Println(`{"error":"no active workflow"}`)
-			os.Exit(1)
-		}
-		die(fmt.Sprintf("No active workflow. Run %scrossagent new <name>%s", BOLD, NC))
-	}
-
-	d := state.WorkflowDir(name)
-	if _, err := os.Stat(d); os.IsNotExist(err) {
-		if jsonMode {
-			fmt.Println(`{"error":"workflow dir missing"}`)
-			os.Exit(1)
-		}
-		die(fmt.Sprintf("Workflow dir missing: %s", d))
-	}
+	name, d := resolveWorkflow(flagStr(args, "--workflow"), jsonMode)
 
 	phase, _ := state.GetPhase(d)
 	cfg := readConfigOrDie(d)
@@ -538,7 +518,7 @@ func cmdStatus(args []string) {
 	phaseLabel := state.PhaseLabel(phase)
 
 	retryCount := confInt(d, "retry_count", 0)
-	maxRetries := confInt(d, "max_retries", 3)
+	maxRetries := confInt(d, "max_retries", 10)
 
 	planAg := getPhaseAgentOrDie(d, "plan")
 	reviewAg := getPhaseAgentOrDie(d, "review")
@@ -779,10 +759,7 @@ func cmdReset(args []string) {
 }
 
 func cmdAdvance(args []string) {
-	_, d, err := cli.RequireWorkflow()
-	if err != nil {
-		die(err.Error())
-	}
+	_, d := resolveWorkflow(flagStr(args, "--workflow"), false)
 	phase, _ := state.GetPhase(d)
 
 	if phase == "done" {
@@ -802,10 +779,7 @@ func cmdAdvance(args []string) {
 }
 
 func cmdDone(args []string) {
-	name, d, err := cli.RequireWorkflow()
-	if err != nil {
-		die(err.Error())
-	}
+	name, d := resolveWorkflow(flagStr(args, "--workflow"), false)
 	state.SetPhase(d, "done")
 	success(fmt.Sprintf("Workflow '%s' marked complete.", name))
 }
@@ -1863,6 +1837,7 @@ func cmdPhaseCmd(args []string) {
 	jsonMode := false
 	force := false
 	implPhase := 1
+	workflow := ""
 
 	i := 0
 	for i < len(args) {
@@ -1881,6 +1856,10 @@ func cmdPhaseCmd(args []string) {
 				die("Implementation phase must be a positive integer.")
 			}
 			i += 2
+		case "--workflow":
+			requireArg(args, i)
+			workflow = args[i+1]
+			i += 2
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				die(fmt.Sprintf("Unknown option: %s", args[i]))
@@ -1891,7 +1870,7 @@ func cmdPhaseCmd(args []string) {
 	}
 
 	if phaseArg == "" {
-		die("Usage: crossagent phase-cmd <plan|review|implement|verify> [--json] [--phase N]")
+		die("Usage: crossagent phase-cmd <plan|review|implement|verify> [--json] [--phase N] [--workflow <name>]")
 	}
 
 	// Bash only accepts named phases, not numeric ones.
@@ -1902,10 +1881,7 @@ func cmdPhaseCmd(args []string) {
 		die(fmt.Sprintf("Unknown phase: %s. Use: plan, review, implement, verify", phaseArg))
 	}
 
-	name, d, err := cli.RequireWorkflow()
-	if err != nil {
-		die(err.Error())
-	}
+	name, d := resolveWorkflow(workflow, jsonMode)
 
 	result, err := agent.BuildPhaseCmd(d, name, phaseArg, force, implPhase)
 	if err != nil {
@@ -1937,6 +1913,7 @@ func cmdRevert(args []string) {
 	target := ""
 	reason := ""
 	jsonMode := false
+	workflow := ""
 
 	i := 0
 	for i < len(args) {
@@ -1948,6 +1925,10 @@ func cmdRevert(args []string) {
 			requireArg(args, i)
 			reason = args[i+1]
 			i += 2
+		case "--workflow":
+			requireArg(args, i)
+			workflow = args[i+1]
+			i += 2
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				die(fmt.Sprintf("Unknown option: %s", args[i]))
@@ -1958,17 +1939,14 @@ func cmdRevert(args []string) {
 	}
 
 	if target == "" {
-		die("Usage: crossagent revert <target_phase> [--reason <text>]")
+		die("Usage: crossagent revert <target_phase> [--reason <text>] [--workflow <name>]")
 	}
 	targetNum, err := strconv.Atoi(target)
 	if err != nil || targetNum < 1 || targetNum > 4 {
 		die("Target phase must be 1-4.")
 	}
 
-	_, d, err := cli.RequireWorkflow()
-	if err != nil {
-		die(err.Error())
-	}
+	_, d := resolveWorkflow(workflow, jsonMode)
 	phase, _ := state.GetPhase(d)
 	pn := state.PhaseNum(phase)
 
@@ -1977,7 +1955,7 @@ func cmdRevert(args []string) {
 	}
 
 	retryCount := confInt(d, "retry_count", 0)
-	maxRetries := confInt(d, "max_retries", 3)
+	maxRetries := confInt(d, "max_retries", 10)
 
 	if retryCount >= maxRetries {
 		if jsonMode {
@@ -2116,6 +2094,7 @@ func cmdRevert(args []string) {
 func cmdSupervise(args []string) {
 	jsonMode := false
 	supervisePhase := ""
+	workflow := ""
 
 	i := 0
 	for i < len(args) {
@@ -2127,18 +2106,19 @@ func cmdSupervise(args []string) {
 			requireArg(args, i)
 			supervisePhase = args[i+1]
 			i += 2
+		case "--workflow":
+			requireArg(args, i)
+			workflow = args[i+1]
+			i += 2
 		default:
 			i++
 		}
 	}
 
-	_, d, err := cli.RequireWorkflow()
-	if err != nil {
-		die(err.Error())
-	}
+	_, d := resolveWorkflow(workflow, jsonMode)
 
 	retryCount := confInt(d, "retry_count", 0)
-	maxRetries := confInt(d, "max_retries", 3)
+	maxRetries := confInt(d, "max_retries", 10)
 
 	if supervisePhase == "" {
 		if fileExists(filepath.Join(d, "verify.md")) {
@@ -2757,6 +2737,45 @@ func hasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// flagStr extracts the value of a --key <value> flag from args, returning ""
+// if not present. Used by --workflow to let commands target a specific workflow.
+func flagStr(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// resolveWorkflow returns (name, dir) for the given workflow name, or from the
+// global current file if name is empty. Dies on error.
+func resolveWorkflow(name string, jsonMode bool) (string, string) {
+	if name == "" {
+		var err error
+		name, err = state.GetCurrent()
+		if err != nil {
+			die(err.Error())
+		}
+		if name == "" {
+			if jsonMode {
+				fmt.Println(`{"error":"no active workflow"}`)
+				os.Exit(1)
+			}
+			die(fmt.Sprintf("No active workflow. Run %scrossagent new <name>%s", BOLD, NC))
+		}
+	}
+	d := state.WorkflowDir(name)
+	if _, err := os.Stat(d); os.IsNotExist(err) {
+		if jsonMode {
+			fmt.Println(`{"error":"workflow dir missing"}`)
+			os.Exit(1)
+		}
+		die(fmt.Sprintf("Workflow dir missing: %s", d))
+	}
+	return name, d
 }
 
 func requireArg(args []string, i int) {

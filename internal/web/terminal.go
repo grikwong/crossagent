@@ -37,85 +37,6 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// termSession tracks a single PTY session on a WebSocket connection.
-type termSession struct {
-	mu             sync.Mutex
-	ptmx           *os.File     // PTY master
-	cmd            *exec.Cmd    // spawned process
-	chatBuffer     []string     // buffered output chunks
-	chatBufferSize int          // total bytes buffered
-	chatWorkflowDir string
-	chatPhaseName  string
-	chatFlushed    bool
-}
-
-// flushChatHistory writes buffered chat output to disk. Safe to call multiple times.
-func (s *termSession) flushChatHistory() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.chatFlushed {
-		return
-	}
-	s.chatFlushed = true
-
-	if s.chatWorkflowDir == "" || s.chatPhaseName == "" || len(s.chatBuffer) == 0 {
-		return
-	}
-
-	dir := filepath.Join(s.chatWorkflowDir, "chat-history")
-	logFile := filepath.Join(dir, s.chatPhaseName+".log")
-	tmpFile := logFile + ".tmp"
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("Failed to create chat-history dir: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(tmpFile, []byte(strings.Join(s.chatBuffer, "")), 0644); err != nil {
-		log.Printf("Failed to write chat history: %v", err)
-		os.Remove(tmpFile)
-		return
-	}
-
-	if err := os.Rename(tmpFile, logFile); err != nil {
-		log.Printf("Failed to rename chat history: %v", err)
-		os.Remove(tmpFile)
-		return
-	}
-
-	// Release buffer memory
-	s.chatBuffer = nil
-	s.chatBufferSize = 0
-}
-
-// appendChat appends data to the chat buffer if under cap.
-func (s *termSession) appendChat(data string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.chatWorkflowDir == "" || s.chatPhaseName == "" || s.chatBufferSize >= chatHistoryBufferCap {
-		return
-	}
-	s.chatBuffer = append(s.chatBuffer, data)
-	s.chatBufferSize += len(data)
-}
-
-// kill terminates the PTY process if running.
-func (s *termSession) kill() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.ptmx != nil {
-		s.ptmx.Close()
-		s.ptmx = nil
-	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-		s.cmd = nil
-	}
-}
-
 // wsMsg is a WebSocket message envelope.
 type wsMsg struct {
 	Type      string `json:"type"`
@@ -125,6 +46,8 @@ type wsMsg struct {
 	PhaseName string `json:"phaseName,omitempty"`
 	Subphase  string `json:"subphase,omitempty"`
 	Force     bool   `json:"force,omitempty"`
+	SessionID string `json:"sessionID,omitempty"`
+	Workflow  string `json:"workflow,omitempty"` // Target workflow name (avoids global state)
 }
 
 // phaseCmdResult mirrors the JSON output from `crossagent phase-cmd --json`.
@@ -137,10 +60,25 @@ type phaseCmdResult struct {
 	Error       string   `json:"error"`
 }
 
+// connWriteMu provides per-connection write serialization.
+// gorilla/websocket does not allow concurrent writers on a single connection.
+var connWriteMu sync.Map // map[*websocket.Conn]*sync.Mutex
+
+func getConnMu(ws *websocket.Conn) *sync.Mutex {
+	if mu, ok := connWriteMu.Load(ws); ok {
+		return mu.(*sync.Mutex)
+	}
+	mu, _ := connWriteMu.LoadOrStore(ws, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
 func wsSend(ws *websocket.Conn, msgType string, fields map[string]any) {
 	fields["type"] = msgType
 	data, _ := json.Marshal(fields)
+	mu := getConnMu(ws)
+	mu.Lock()
 	ws.WriteMessage(websocket.TextMessage, data)
+	mu.Unlock()
 }
 
 func clamp(val, min, max uint16) uint16 {
@@ -166,185 +104,297 @@ func cleanEnv() []string {
 	return append(env, "TERM=xterm-256color")
 }
 
+// connState tracks the per-connection session attachment.
+type connState struct {
+	mu        sync.Mutex
+	sessionID string
+}
+
 // handleTerminal handles WebSocket connections for the terminal.
-func handleTerminal(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
+// It uses the SessionManager to decouple PTY sessions from individual connections.
+func handleTerminal(sm *SessionManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer ws.Close()
+		defer connWriteMu.Delete(ws) // clean up per-connection write mutex
+
+		cs := &connState{}
+
+		defer func() {
+			// Detach from any session on disconnect
+			cs.mu.Lock()
+			sid := cs.sessionID
+			cs.mu.Unlock()
+			if sid != "" {
+				sm.Detach(sid, ws)
+			}
+		}()
+
+		for {
+			_, rawMsg, err := ws.ReadMessage()
+			if err != nil {
+				break
+			}
+
+			var msg wsMsg
+			if err := json.Unmarshal(rawMsg, &msg); err != nil {
+				wsSend(ws, "error", map[string]any{"message": "Invalid JSON"})
+				continue
+			}
+
+			switch msg.Type {
+			case "spawn":
+				handleSpawn(sm, ws, cs, &msg)
+
+			case "attach":
+				handleAttach(sm, ws, cs, &msg)
+
+			case "detach":
+				cs.mu.Lock()
+				sid := cs.sessionID
+				cs.sessionID = ""
+				cs.mu.Unlock()
+				if sid != "" {
+					sm.Detach(sid, ws)
+				}
+
+			case "claim-input":
+				cs.mu.Lock()
+				sid := cs.sessionID
+				cs.mu.Unlock()
+				if sid != "" {
+					if !sm.ClaimInput(sid, ws) {
+						wsSend(ws, "error", map[string]any{"message": "Cannot claim input"})
+					}
+				}
+
+			case "input":
+				cs.mu.Lock()
+				sid := cs.sessionID
+				cs.mu.Unlock()
+				if sid == "" {
+					continue
+				}
+				s := sm.Get(sid)
+				if s == nil {
+					continue
+				}
+				s.mu.Lock()
+				// Allow input if this conn is the input owner or if no owner is set
+				canInput := s.InputOwner == nil || s.InputOwner == ws
+				p := s.Ptmx
+				s.mu.Unlock()
+				if canInput && p != nil {
+					fmt.Fprint(p, msg.Data)
+					s.appendChat(msg.Data)
+				}
+
+			case "kill":
+				cs.mu.Lock()
+				sid := cs.sessionID
+				cs.mu.Unlock()
+				if sid != "" {
+					sm.Kill(sid)
+				}
+
+			case "resize":
+				cs.mu.Lock()
+				sid := cs.sessionID
+				cs.mu.Unlock()
+				if sid == "" {
+					continue
+				}
+				s := sm.Get(sid)
+				if s == nil {
+					continue
+				}
+				s.mu.Lock()
+				p := s.Ptmx
+				s.mu.Unlock()
+				if p != nil && msg.Cols > 0 && msg.Rows > 0 {
+					cols := clamp(msg.Cols, 10, 500)
+					rows := clamp(msg.Rows, 5, 200)
+					pty.Setsize(p, &pty.Winsize{Rows: rows, Cols: cols})
+				}
+
+			default:
+				wsSend(ws, "error", map[string]any{"message": fmt.Sprintf("Unknown type: %s", msg.Type)})
+			}
+		}
+	}
+}
+
+// handleSpawn creates a new PTY session via the SessionManager.
+func handleSpawn(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsMsg) {
+	// Detach from previous session if any
+	cs.mu.Lock()
+	oldSID := cs.sessionID
+	cs.sessionID = ""
+	cs.mu.Unlock()
+	if oldSID != "" {
+		sm.Detach(oldSID, ws)
+	}
+
+	if msg.PhaseName == "" || !validPhases[msg.PhaseName] {
+		wsSend(ws, "error", map[string]any{"message": "Invalid or missing phaseName"})
 		return
 	}
-	defer ws.Close()
 
-	session := &termSession{}
-
-	defer func() {
-		session.flushChatHistory()
-		session.kill()
-	}()
-
-	for {
-		_, rawMsg, err := ws.ReadMessage()
-		if err != nil {
-			break
+	// Derive the command entirely server-side via phase-cmd
+	cliArgs := []string{"phase-cmd", msg.PhaseName, "--json"}
+	if msg.Workflow != "" {
+		cliArgs = append(cliArgs, "--workflow", msg.Workflow)
+	}
+	if msg.Subphase != "" {
+		validSub := true
+		for _, c := range msg.Subphase {
+			if c < '0' || c > '9' {
+				validSub = false
+				break
+			}
 		}
-
-		var msg wsMsg
-		if err := json.Unmarshal(rawMsg, &msg); err != nil {
-			wsSend(ws, "error", map[string]any{"message": "Invalid JSON"})
-			continue
-		}
-
-		switch msg.Type {
-		case "spawn":
-			// Flush any previous session's chat history
-			session.flushChatHistory()
-			session.kill()
-
-			if msg.PhaseName == "" || !validPhases[msg.PhaseName] {
-				wsSend(ws, "error", map[string]any{"message": "Invalid or missing phaseName"})
-				continue
-			}
-
-			// Derive the command entirely server-side via phase-cmd
-			cliArgs := []string{"phase-cmd", msg.PhaseName, "--json"}
-			if msg.Subphase != "" {
-				// Validate subphase is numeric
-				validSub := true
-				for _, c := range msg.Subphase {
-					if c < '0' || c > '9' {
-						validSub = false
-						break
-					}
-				}
-				if validSub {
-					cliArgs = append(cliArgs, "--phase", msg.Subphase)
-				}
-			}
-			if msg.Force {
-				cliArgs = append(cliArgs, "--force")
-			}
-
-			phaseCmdOut, err := runCLI(cliArgs...)
-			if err != nil {
-				wsSend(ws, "error", map[string]any{"message": "Failed to get phase command: " + err.Error()})
-				continue
-			}
-
-			var phaseCmd phaseCmdResult
-			if err := json.Unmarshal(phaseCmdOut, &phaseCmd); err != nil {
-				wsSend(ws, "error", map[string]any{"message": "Failed to parse phase command"})
-				continue
-			}
-			if phaseCmd.Error != "" {
-				wsSend(ws, "error", map[string]any{"message": phaseCmd.Error})
-				continue
-			}
-			if phaseCmd.Command == "" {
-				wsSend(ws, "error", map[string]any{"message": "No command for phase"})
-				continue
-			}
-
-			// Reset chat history state
-			session.mu.Lock()
-			session.chatBuffer = nil
-			session.chatBufferSize = 0
-			session.chatFlushed = false
-			session.chatWorkflowDir = phaseCmd.WorkflowDir
-			session.chatPhaseName = msg.PhaseName
-			session.mu.Unlock()
-
-			cols := clamp(msg.Cols, 10, 500)
-			rows := clamp(msg.Rows, 5, 200)
-			if cols == 0 {
-				cols = 120
-			}
-			if rows == 0 {
-				rows = 30
-			}
-
-			cwd := phaseCmd.Cwd
-			if cwd == "" {
-				cwd, _ = os.UserHomeDir()
-			}
-
-			cmd := exec.Command(phaseCmd.Command, phaseCmd.Args...)
-			cmd.Dir = cwd
-			cmd.Env = cleanEnv()
-
-			ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-				Rows: rows,
-				Cols: cols,
-			})
-			if err != nil {
-				wsSend(ws, "error", map[string]any{"message": err.Error()})
-				continue
-			}
-
-			session.mu.Lock()
-			session.ptmx = ptmx
-			session.cmd = cmd
-			session.mu.Unlock()
-
-			wsSend(ws, "spawned", map[string]any{"pid": cmd.Process.Pid})
-
-			// Read PTY output in a goroutine
-			go func() {
-				buf := make([]byte, 32*1024)
-				for {
-					n, err := ptmx.Read(buf)
-					if n > 0 {
-						data := string(buf[:n])
-						wsSend(ws, "output", map[string]any{"data": data})
-						session.appendChat(data)
-					}
-					if err != nil {
-						break
-					}
-				}
-
-				// PTY closed — wait for process to finish
-				exitCode := 0
-				if err := cmd.Wait(); err != nil {
-					if exitErr, ok := err.(*exec.ExitError); ok {
-						exitCode = exitErr.ExitCode()
-					}
-				}
-
-				session.flushChatHistory()
-				wsSend(ws, "exit", map[string]any{"code": exitCode})
-
-				session.mu.Lock()
-				session.ptmx = nil
-				session.cmd = nil
-				session.mu.Unlock()
-			}()
-
-		case "input":
-			session.mu.Lock()
-			p := session.ptmx
-			session.mu.Unlock()
-			if p != nil {
-				fmt.Fprint(p, msg.Data)
-				// Also capture input for non-echoed cases
-				session.appendChat(msg.Data)
-			}
-
-		case "kill":
-			session.flushChatHistory()
-			session.kill()
-
-		case "resize":
-			session.mu.Lock()
-			p := session.ptmx
-			session.mu.Unlock()
-			if p != nil && msg.Cols > 0 && msg.Rows > 0 {
-				cols := clamp(msg.Cols, 10, 500)
-				rows := clamp(msg.Rows, 5, 200)
-				pty.Setsize(p, &pty.Winsize{Rows: rows, Cols: cols})
-			}
-
-		default:
-			wsSend(ws, "error", map[string]any{"message": fmt.Sprintf("Unknown type: %s", msg.Type)})
+		if validSub {
+			cliArgs = append(cliArgs, "--phase", msg.Subphase)
 		}
 	}
+	if msg.Force {
+		cliArgs = append(cliArgs, "--force")
+	}
+
+	phaseCmdOut, err := runCLI(cliArgs...)
+	if err != nil {
+		wsSend(ws, "error", map[string]any{"message": "Failed to get phase command: " + err.Error()})
+		return
+	}
+
+	var phaseCmd phaseCmdResult
+	if err := json.Unmarshal(phaseCmdOut, &phaseCmd); err != nil {
+		wsSend(ws, "error", map[string]any{"message": "Failed to parse phase command"})
+		return
+	}
+	if phaseCmd.Error != "" {
+		wsSend(ws, "error", map[string]any{"message": phaseCmd.Error})
+		return
+	}
+	if phaseCmd.Command == "" {
+		wsSend(ws, "error", map[string]any{"message": "No command for phase"})
+		return
+	}
+
+	cols := clamp(msg.Cols, 10, 500)
+	rows := clamp(msg.Rows, 5, 200)
+	if cols == 0 {
+		cols = 120
+	}
+	if rows == 0 {
+		rows = 30
+	}
+
+	cwd := phaseCmd.Cwd
+	if cwd == "" {
+		cwd, _ = os.UserHomeDir()
+	}
+
+	cmd := exec.Command(phaseCmd.Command, phaseCmd.Args...)
+	cmd.Dir = cwd
+	cmd.Env = cleanEnv()
+
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
+		Rows: rows,
+		Cols: cols,
+	})
+	if err != nil {
+		wsSend(ws, "error", map[string]any{"message": err.Error()})
+		return
+	}
+
+	// Determine workflow name from workflow dir
+	workflow := filepath.Base(phaseCmd.WorkflowDir)
+
+	// Create session in the manager
+	session := sm.Create(workflow, msg.PhaseName, cmd, ptmx, phaseCmd.WorkflowDir)
+
+	// Attach this connection as the first viewer (and input owner)
+	session.mu.Lock()
+	session.Viewers[ws] = true
+	session.InputOwner = ws
+	session.mu.Unlock()
+
+	cs.mu.Lock()
+	cs.sessionID = session.ID
+	cs.mu.Unlock()
+
+	wsSend(ws, "spawned", map[string]any{
+		"pid":       cmd.Process.Pid,
+		"sessionID": session.ID,
+	})
+
+	// Read PTY output in a goroutine, broadcast to all viewers
+	go func() {
+		defer close(session.Done)
+
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				data := string(buf[:n])
+				session.OutputBuf.Write(buf[:n])
+				session.appendChat(data)
+				session.Broadcast("output", map[string]any{"data": data})
+			}
+			if err != nil {
+				break
+			}
+		}
+
+		// PTY closed — wait for process to finish and get real exit code
+		exitCode := 0
+		if err := cmd.Wait(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			}
+		}
+
+		session.mu.Lock()
+		session.ExitCode = exitCode
+		session.Status = "exited"
+		session.Ptmx = nil
+		session.Cmd = nil
+		session.mu.Unlock()
+
+		// Flush chat history AFTER all output is drained and exit code is set
+		session.flushChatHistory()
+		session.Broadcast("exit", map[string]any{"code": exitCode})
+	}()
+}
+
+// handleAttach connects a WebSocket to an existing session.
+func handleAttach(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsMsg) {
+	// Detach from previous session if any
+	cs.mu.Lock()
+	oldSID := cs.sessionID
+	cs.sessionID = ""
+	cs.mu.Unlock()
+	if oldSID != "" {
+		sm.Detach(oldSID, ws)
+	}
+
+	if msg.SessionID == "" {
+		wsSend(ws, "error", map[string]any{"message": "Missing sessionID"})
+		return
+	}
+
+	s := sm.Attach(msg.SessionID, ws)
+	if s == nil {
+		wsSend(ws, "error", map[string]any{"message": "Session not found: " + msg.SessionID})
+		return
+	}
+
+	cs.mu.Lock()
+	cs.sessionID = msg.SessionID
+	cs.mu.Unlock()
 }

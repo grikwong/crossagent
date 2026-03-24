@@ -7,6 +7,8 @@ let ws = null;
 let term = null;
 let fitAddon = null;
 let sessionActive = false;
+let currentSessionID = null;  // Server-side session ID for reattach
+let isInputOwner = true;      // Whether this client can send input
 let activeArtifact = null;
 let resizeTimer = null;
 let resizeFrame = null;
@@ -33,9 +35,18 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// Workflow-scoped API call — routes through /api/workflow/{name}/... to avoid
+// dependence on the global active workflow file.
+function wfApi(path, opts = {}) {
+  if (!state || !state.name) return api(path, opts);
+  return api(`/workflow/${encodeURIComponent(state.name)}${path}`, opts);
+}
+
 async function fetchStatus() {
   try {
-    const data = await api('/status');
+    const data = state && state.name
+      ? await wfApi('/status')
+      : await api('/status');
     if (data.error) {
       state = null;
       renderNoWorkflow();
@@ -623,6 +634,10 @@ function initTerminal() {
 
   term.onData(data => {
     if (ws && ws.readyState === WebSocket.OPEN && sessionActive) {
+      if (!isInputOwner) {
+        // Auto-claim input ownership when trying to type
+        ws.send(JSON.stringify({ type: 'claim-input' }));
+      }
       ws.send(JSON.stringify({ type: 'input', data }));
     }
   });
@@ -652,6 +667,8 @@ function connectWS() {
   ws.onopen = () => {
     document.getElementById('connection-status').classList.add('connected');
     document.getElementById('connection-status').title = 'Connected to server';
+    // Try to reattach to a running session
+    tryReattachSession();
   };
 
   ws.onmessage = (event) => {
@@ -667,6 +684,8 @@ function connectWS() {
         break;
       case 'spawned':
         sessionActive = true;
+        currentSessionID = msg.sessionID || null;
+        isInputOwner = true;
         setTerminalStatus('running', `Running — PID ${msg.pid}`);
         updateRunButton();
         scheduleTerminalFit({ notifyPty: true, force: true });
@@ -674,13 +693,44 @@ function connectWS() {
       case 'exit':
         flushTerminalOutput();
         sessionActive = false;
+        currentSessionID = null;
+        isInputOwner = true;
         stopOutputPolling();
         handleSessionExit(msg.code);
+        break;
+      case 'replay':
+        // Scrollback replay on session reattach
+        if (msg.data) {
+          writeTerminalOutput(msg.data);
+        }
+        break;
+      case 'attached':
+        // Successfully reattached to an existing session
+        sessionActive = true;
+        currentSessionID = msg.sessionID || null;
+        isInputOwner = !!msg.inputOwner;
+        setTerminalStatus('running', `Reattached${isInputOwner ? '' : ' (view-only)'}`);
+        updateRunButton();
+        scheduleTerminalFit({ notifyPty: true, force: true });
+        if (msg.status === 'exited') {
+          // Session already finished — treat like an exit
+          sessionActive = false;
+          currentSessionID = null;
+          setTerminalStatus('exited', 'Session ended');
+          updateRunButton();
+        }
+        break;
+      case 'input-claimed':
+        isInputOwner = true;
+        break;
+      case 'input-released':
+        isInputOwner = false;
         break;
       case 'error':
         flushTerminalOutput();
         term.writeln(`\r\n\x1b[31m  Error: ${msg.message}\x1b[0m\r\n`);
         sessionActive = false;
+        currentSessionID = null;
         stopOutputPolling();
         updateRunButton();
         break;
@@ -693,10 +743,51 @@ function connectWS() {
     flushTerminalOutput();
     document.getElementById('connection-status').classList.remove('connected');
     document.getElementById('connection-status').title = 'Disconnected — reconnecting...';
+    // Keep currentSessionID so we can reattach on reconnect
     sessionActive = false;
     stopOutputPolling();
     setTimeout(connectWS, 3000);
   };
+}
+
+// ── Session Recovery ─────────────────────────────────────────────────────────
+// On WebSocket (re)connect, check if there's a running server-side session
+// we should reattach to — either from a known sessionID or by matching
+// the current workflow/phase.
+
+async function tryReattachSession() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  // If we already know a session ID from a previous connection, try reattaching
+  if (currentSessionID) {
+    ws.send(JSON.stringify({ type: 'attach', sessionID: currentSessionID }));
+    return;
+  }
+
+  // Otherwise, query the server for running sessions and find one matching
+  // the current workflow
+  if (!state || !state.name) return;
+
+  try {
+    const sessions = await fetch('/api/sessions').then(r => r.json());
+    if (!Array.isArray(sessions)) return;
+
+    const pn = parseInt(state.phase, 10);
+    const phaseName = PHASE_NAMES[pn];
+
+    // Find a running session for this workflow+phase
+    const match = sessions.find(s =>
+      s.workflow === state.name && s.status === 'running' &&
+      (!phaseName || s.phase === phaseName)
+    );
+
+    if (match) {
+      currentSessionID = match.id;
+      ws.send(JSON.stringify({ type: 'attach', sessionID: match.id }));
+    }
+  } catch {
+    // Non-critical — if we can't query sessions, just continue normally
+  }
 }
 
 // ── Output File Polling ─────────────────────────────────────────────────────
@@ -723,7 +814,7 @@ async function pollForOutput() {
     return;
   }
   try {
-    const result = await api('/check-file', {
+    const result = await wfApi('/check-file', {
       method: 'POST',
       body: JSON.stringify({ path: pendingOutputFile }),
     });
@@ -761,7 +852,7 @@ async function onOutputDetected() {
 
     // Advance phase so supervise sees correct state, then evaluate
     try {
-      await api('/check-advance', {
+      await wfApi('/check-advance', {
         method: 'POST',
         body: JSON.stringify({ output_file: outputFile }),
       });
@@ -776,7 +867,7 @@ async function onOutputDetected() {
   setGuide(`${capitalize(phaseName)} complete. Advancing...`);
 
   try {
-    const result = await api('/check-advance', {
+    const result = await wfApi('/check-advance', {
       method: 'POST',
       body: JSON.stringify({ output_file: outputFile }),
     });
@@ -809,7 +900,7 @@ async function handleSupervisorDecision(phaseName) {
   const label = phaseName === 'verify' ? 'verification' : 'review';
 
   try {
-    const result = await api('/supervise', {
+    const result = await wfApi('/supervise', {
       method: 'POST',
       body: JSON.stringify({ phase: phaseName }),
     });
@@ -900,7 +991,7 @@ async function autoRunNextPhase() {
   setGuide(`Auto-running ${phaseName} phase (retry)...`, 'warning');
 
   try {
-    const config = await api(`/phase-cmd/${phaseName}?force=true`);
+    const config = await wfApi(`/phase-cmd/${phaseName}?force=true`);
     if (config.error) {
       retryLoopActive = false;
       term.writeln(`\r\n\x1b[31m  Error: ${config.error}\x1b[0m\r\n`);
@@ -917,6 +1008,7 @@ async function autoRunNextPhase() {
     ws.send(JSON.stringify({
       type: 'spawn',
       phaseName: phaseName,
+      workflow: state.name,
       force: true,
       cols: term.cols,
       rows: term.rows,
@@ -958,7 +1050,7 @@ async function handleSessionExit(exitCode) {
       const exists = await checkFileExists(outputFile);
       if (exists) {
         try {
-          await api('/check-advance', {
+          await wfApi('/check-advance', {
             method: 'POST',
             body: JSON.stringify({ output_file: outputFile }),
           });
@@ -990,7 +1082,7 @@ async function handleSessionExit(exitCode) {
 
 async function checkFileExists(filePath) {
   try {
-    const result = await api('/check-file', {
+    const result = await wfApi('/check-file', {
       method: 'POST',
       body: JSON.stringify({ path: filePath }),
     });
@@ -1011,7 +1103,7 @@ async function tryAutoAdvance(outputFile, retries) {
   for (let i = 0; i < retries; i++) {
     if (i > 0) await sleep(1000);
     try {
-      const result = await api('/check-advance', {
+      const result = await wfApi('/check-advance', {
         method: 'POST',
         body: JSON.stringify({ output_file: outputFile }),
       });
@@ -1050,7 +1142,7 @@ async function runPhase() {
   }
 
   try {
-    const config = await api(`/phase-cmd/${phaseName}`);
+    const config = await wfApi(`/phase-cmd/${phaseName}`);
     if (config.error) {
       term.writeln(`\r\n\x1b[31m  Error: ${config.error}\x1b[0m\r\n`);
       btn.disabled = sessionActive;
@@ -1068,6 +1160,7 @@ async function runPhase() {
     ws.send(JSON.stringify({
       type: 'spawn',
       phaseName: phaseName,
+      workflow: state.name,
       cols: term.cols,
       rows: term.rows,
     }));
@@ -1091,7 +1184,7 @@ async function loadArtifact(type) {
   title.textContent = `${type}.md`;
 
   try {
-    const data = await api(`/artifact/${type}`);
+    const data = await wfApi(`/artifact/${type}`);
     if (data.error) {
       viewer.innerHTML = `<p class="muted centered">${esc(data.error)}</p>`;
       return;
@@ -1105,7 +1198,7 @@ async function loadArtifact(type) {
 async function loadChatHistory(phase) {
   if (sessionActive) return; // Don't interrupt active sessions
   try {
-    const data = await api(`/chat-history/${phase}`);
+    const data = await wfApi(`/chat-history/${phase}`);
     if (!data.exists) {
       term.writeln(`\r\n\x1b[33m  No chat history available for ${phase} phase.\x1b[0m\r\n`);
       return;
@@ -1116,7 +1209,10 @@ async function loadChatHistory(phase) {
     term.writeln(`\x1b[2m  ${'─'.repeat(50)}\x1b[0m\r\n`);
     if (data.large) {
       // Stream large files
-      const res = await fetch(`/api/chat-history/${phase}/stream`);
+      const streamPath = state && state.name
+        ? `/api/workflow/${encodeURIComponent(state.name)}/chat-history/${phase}/stream`
+        : `/api/chat-history/${phase}/stream`;
+      const res = await fetch(streamPath);
       const text = await res.text();
       term.write(text);
     } else {
@@ -1135,7 +1231,7 @@ async function loadChatHistory(phase) {
 async function addDirectory(dirPath) {
   if (!dirPath || !state) return;
   try {
-    const data = await api('/repos/add', {
+    const data = await wfApi('/repos/add', {
       method: 'POST',
       body: JSON.stringify({ path: dirPath }),
     });
@@ -1153,7 +1249,7 @@ async function addDirectory(dirPath) {
 async function removeDirectory(dirPath) {
   if (!dirPath || !state) return;
   try {
-    const data = await api('/repos/remove', {
+    const data = await wfApi('/repos/remove', {
       method: 'POST',
       body: JSON.stringify({ path: dirPath }),
     });
@@ -1207,16 +1303,19 @@ async function createWorkflow(name, repo, description, addDirs, project) {
 async function switchWorkflow(name) {
   if (!name) return;
   try {
-    const data = await api(`/use/${name}`, { method: 'POST' });
-    if (data.error) {
-      term.writeln(`\r\n\x1b[31m  Error: ${data.error}\x1b[0m\r\n`);
-    }
+    // Set global current for CLI backward compatibility
+    await api(`/use/${name}`, { method: 'POST' });
+    // Set local state immediately so workflow-scoped calls target the right workflow
+    if (!state) state = {};
+    state.name = name;
     retryLoopActive = false;
     activeArtifact = null;
     document.querySelectorAll('.artifact-item').forEach(el => el.classList.remove('active'));
     document.getElementById('artifact-viewer').innerHTML = '<p class="muted centered">Select an artifact from the sidebar to view it</p>';
     document.getElementById('artifact-title').textContent = 'Artifact Viewer';
     await fetchStatus();
+    // Try to reattach to any running PTY session for the newly selected workflow
+    await tryReattachSession();
   } catch (err) {
     term.writeln(`\r\n\x1b[31m  Error: ${err.message}\x1b[0m\r\n`);
   }
@@ -1224,7 +1323,7 @@ async function switchWorkflow(name) {
 
 async function advancePhase() {
   try {
-    const data = await api('/advance', { method: 'POST' });
+    const data = await wfApi('/advance', { method: 'POST' });
     if (data.error) {
       term.writeln(`\r\n\x1b[31m  Error: ${data.error}\x1b[0m\r\n`);
     } else {
@@ -1239,7 +1338,7 @@ async function advancePhase() {
 
 async function markDone() {
   try {
-    const data = await api('/done', { method: 'POST' });
+    const data = await wfApi('/done', { method: 'POST' });
     if (data.error) {
       term.writeln(`\r\n\x1b[31m  Error: ${data.error}\x1b[0m\r\n`);
     } else {
@@ -1632,6 +1731,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   await fetchProjects();
   await fetchList();
   await fetchStatus();
+
+  // Now that state is loaded, retry session reattach (the ws.onopen attempt
+  // likely ran before fetchStatus populated state, so it returned early).
+  if (!sessionActive && !currentSessionID) {
+    tryReattachSession();
+  }
 
   // Start tour on every app launch (user requirement: "tour the user on every launched of the app")
   // Users can skip immediately via "Skip Tour" button; "?" button in topbar replays it anytime

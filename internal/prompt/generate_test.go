@@ -514,11 +514,11 @@ func TestReviewPromptParityWithBash(t *testing.T) {
 
 	parityBlocks := []string{
 		"# Crossagent Phase 2: Review Implementation Plan",
-		"You are the **Reviewer** in a dual-model AI workflow.",
+		"You are an **Adversarial Reviewer** in a dual-model AI workflow.",
 		"Read the plan at: `" + planPath + "`",
 		"## Review Criteria",
-		"- **Completeness** — Any missing files, steps, or dependencies?",
-		"- **Correctness** — Does the approach match existing code patterns?",
+		"- **Completeness** — What files, steps, or dependencies did the planner miss?",
+		"- **Correctness** — Does the approach actually match existing code patterns",
 		"### Issues (Must Fix)",
 		"### Suggestions (Nice to Have)",
 		"### Phase Assessment",
@@ -593,10 +593,10 @@ func TestVerifyPromptParityWithBash(t *testing.T) {
 
 	parityBlocks := []string{
 		"# Crossagent Phase 4: Verify Implementation",
-		"You are the **Verifier** in a dual-model AI workflow.",
+		"You are a **Red-Team Verifier** in a dual-model AI workflow.",
 		"## Verification Checklist",
 		"1. **Plan Adherence** — Does implementation match the plan?",
-		"2. **Review Compliance** — Were review issues addressed?",
+		"2. **Review Compliance** — Were review \"Must Fix\" issues actually resolved",
 		"### Status",
 		"One of: **PASS** | **PASS WITH NOTES** | **FAIL**",
 		"### Plan Drift",

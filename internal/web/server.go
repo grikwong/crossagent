@@ -1,18 +1,53 @@
 package web
 
 import (
+	"context"
+	"encoding/json"
 	"io/fs"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 // Serve starts the HTTP server on the given address (e.g., ":3456").
+// It sets up graceful shutdown to kill all active PTY sessions on SIGINT/SIGTERM.
 func Serve(addr string) error {
-	mux := NewMux()
-	return http.ListenAndServe(addr, mux)
+	sm := NewSessionManager()
+	mux := NewMux(sm)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	// Graceful shutdown on SIGINT/SIGTERM
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		// Server stopped on its own (e.g., port in use)
+		sm.ShutdownAll()
+		return err
+	case <-done:
+		log.Println("Shutting down: killing all sessions...")
+		sm.ShutdownAll()
+		if err := srv.Shutdown(context.Background()); err != nil {
+			return err
+		}
+		return nil // clean shutdown, don't propagate ErrServerClosed
+	}
 }
 
 // NewMux creates the HTTP router with all API routes and static file serving.
-func NewMux() *http.ServeMux {
+func NewMux(sm *SessionManager) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// ── API routes ──────────────────────────────────────────────────────
@@ -64,8 +99,28 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("POST /api/repos/add", handleReposAdd)
 	mux.HandleFunc("POST /api/repos/remove", handleReposRemove)
 
+	// Sessions
+	mux.HandleFunc("GET /api/sessions", handleSessions(sm))
+
+	// ── Workflow-scoped routes ──────────────────────────────────────────
+	// These eliminate dependence on the global ~/.crossagent/current file,
+	// enabling multiple browsers to operate on different workflows safely.
+	mux.HandleFunc("GET /api/workflow/{name}/status", handleWorkflowStatus)
+	mux.HandleFunc("GET /api/workflow/{name}/phase-cmd/{phase}", handleWorkflowPhaseCmd)
+	mux.HandleFunc("GET /api/workflow/{name}/artifact/{type}", handleWorkflowArtifact)
+	mux.HandleFunc("POST /api/workflow/{name}/advance", handleWorkflowAdvance)
+	mux.HandleFunc("POST /api/workflow/{name}/done", handleWorkflowDone)
+	mux.HandleFunc("POST /api/workflow/{name}/supervise", handleWorkflowSupervise)
+	mux.HandleFunc("POST /api/workflow/{name}/revert", handleWorkflowRevert)
+	mux.HandleFunc("POST /api/workflow/{name}/check-file", handleWorkflowCheckFile)
+	mux.HandleFunc("POST /api/workflow/{name}/check-advance", handleWorkflowCheckAdvance)
+	mux.HandleFunc("GET /api/workflow/{name}/chat-history/{phase}", handleWorkflowChatHistory)
+	mux.HandleFunc("GET /api/workflow/{name}/chat-history/{phase}/stream", handleWorkflowChatHistoryStream)
+	mux.HandleFunc("POST /api/workflow/{name}/repos/add", handleWorkflowReposAdd)
+	mux.HandleFunc("POST /api/workflow/{name}/repos/remove", handleWorkflowReposRemove)
+
 	// ── WebSocket terminal ──────────────────────────────────────────────
-	mux.HandleFunc("/ws/terminal", handleTerminal)
+	mux.HandleFunc("/ws/terminal", handleTerminal(sm))
 
 	// ── Static files from embedded FS ───────────────────────────────────
 	publicFS, _ := fs.Sub(frontendFS, "public")
@@ -79,4 +134,13 @@ func NewMux() *http.ServeMux {
 	mux.Handle("/", fileServer)
 
 	return mux
+}
+
+// handleSessions returns the list of active/exited sessions.
+func handleSessions(sm *SessionManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessions := sm.List()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(sessions)
+	}
 }
