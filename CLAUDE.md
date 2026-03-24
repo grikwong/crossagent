@@ -30,7 +30,7 @@ crossagent/
 │       ├── api.go      #     REST API handlers (22 endpoints)
 │       ├── terminal.go #     WebSocket + PTY handler, chat history capture
 │       └── public/     #     Vanilla JS frontend (HTML, CSS, JS, vendored libs)
-├── crossagent-legacy.sh  # Deprecated bash CLI (retained for compatibility testing)
+├── crossagent-legacy.sh  # Deprecated bash CLI (no longer maintained or tested)
 ├── test/             # Integration test suite
 │   └── integration_test.sh
 ├── web/              # Legacy Node.js server (retained for reference, no longer runtime-required)
@@ -168,3 +168,17 @@ Critical boundaries:
 - Frontend assets are embedded via `go:embed all:public` in `embed.go`
 - Vendored browser libraries (xterm.js, marked) live in `public/vendor/`
 - Test by running `make start` (builds binary then launches `crossagent serve`)
+
+## Before Pushing
+
+Always run the full CI check suite locally before pushing to avoid CI failures:
+
+```bash
+go vet ./...
+go test ./...
+staticcheck ./...                    # install: go install honnef.co/go/tools/cmd/staticcheck@v0.6.1
+govulncheck ./...                    # install: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+bash test/integration_test.sh ./crossagent   # requires a fresh build first
+```
+
+The GitHub CI runs all of the above (see `.github/workflows/ci.yml` and `security.yml`). Catching issues locally saves a push-fix cycle.

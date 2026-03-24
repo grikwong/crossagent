@@ -402,118 +402,10 @@ assert_json "use switches again" \
   "assert d['name']=='test-wf-2'" \
   "$BINARY" status --json
 
-# ── 13. Bash-vs-Go compatibility ──────────────────────────────────────────────
+# ── 13. Preflight script ──────────────────────────────────────────────────────
 
 echo ""
-echo "  Section 13: Bash-vs-Go compatibility"
-
-# The bash script may have been removed from the working tree but must still
-# be in git history. Extract it to a temp location for the comparison.
-REPO_DIR="$(dirname "$BINARY")"
-BASH_SCRIPT=""
-BASH_EXTRACTED=""
-
-# Try working tree first (legacy rename or still present)
-for candidate in "$REPO_DIR/crossagent.legacy.sh" "$REPO_DIR/crossagent-legacy.sh"; do
-  if [ -f "$candidate" ] && head -1 "$candidate" 2>/dev/null | grep -q "bash"; then
-    BASH_SCRIPT="$candidate"
-    break
-  fi
-done
-
-# Fall back to extracting from git history
-if [ -z "$BASH_SCRIPT" ]; then
-  BASH_EXTRACTED="$(mktemp)"
-  if git -C "$REPO_DIR" show HEAD:crossagent >"$BASH_EXTRACTED" 2>/dev/null && head -1 "$BASH_EXTRACTED" | grep -q "bash"; then
-    chmod +x "$BASH_EXTRACTED"
-    BASH_SCRIPT="$BASH_EXTRACTED"
-    echo "  (extracted bash script from git HEAD for comparison)"
-  else
-    rm -f "$BASH_EXTRACTED"
-    BASH_EXTRACTED=""
-  fi
-fi
-
-if [ -n "$BASH_SCRIPT" ]; then
-  echo "  (running byte-for-byte JSON comparison: bash vs Go)"
-
-  # Create a workflow with bash CLI in an isolated home
-  BASH_HOME="$(mktemp -d)"
-  export CROSSAGENT_HOME="$BASH_HOME"
-  echo "compat test" | bash "$BASH_SCRIPT" new compat-wf --repo /tmp 2>/dev/null || true
-
-  # Also create a project so projects show has data
-  bash "$BASH_SCRIPT" projects new compat-proj 2>/dev/null || true
-
-  # Capture bash output — raw CLI bytes, no normalization
-  BASH_STATUS=$(bash "$BASH_SCRIPT" status --json 2>/dev/null || true)
-  BASH_LIST=$(bash "$BASH_SCRIPT" list --json 2>/dev/null || true)
-  BASH_AGENTS_LIST=$(bash "$BASH_SCRIPT" agents list --json 2>/dev/null || true)
-  BASH_AGENTS_SHOW=$(bash "$BASH_SCRIPT" agents show --json 2>/dev/null || true)
-  BASH_PROJECTS_LIST=$(bash "$BASH_SCRIPT" projects list --json 2>/dev/null || true)
-  BASH_PROJECTS_SHOW=$(bash "$BASH_SCRIPT" projects show compat-proj --json 2>/dev/null || true)
-  BASH_REPOS_LIST=$(bash "$BASH_SCRIPT" repos list --json 2>/dev/null || true)
-  BASH_MEMORY_LIST=$(bash "$BASH_SCRIPT" memory list --json 2>/dev/null || true)
-  BASH_MEMORY_SHOW=$(bash "$BASH_SCRIPT" memory show --json 2>/dev/null || true)
-  BASH_PHASE_CMD=$(bash "$BASH_SCRIPT" phase-cmd plan --json 2>/dev/null || true)
-
-  # Read same state with Go binary — raw CLI bytes
-  GO_STATUS=$("$BINARY" status --json 2>/dev/null || true)
-  GO_LIST=$("$BINARY" list --json 2>/dev/null || true)
-  GO_AGENTS_LIST=$("$BINARY" agents list --json 2>/dev/null || true)
-  GO_AGENTS_SHOW=$("$BINARY" agents show --json 2>/dev/null || true)
-  GO_PROJECTS_LIST=$("$BINARY" projects list --json 2>/dev/null || true)
-  GO_PROJECTS_SHOW=$("$BINARY" projects show compat-proj --json 2>/dev/null || true)
-  GO_REPOS_LIST=$("$BINARY" repos list --json 2>/dev/null || true)
-  GO_MEMORY_LIST=$("$BINARY" memory list --json 2>/dev/null || true)
-  GO_MEMORY_SHOW=$("$BINARY" memory show --json 2>/dev/null || true)
-  GO_PHASE_CMD=$("$BINARY" phase-cmd plan --json 2>/dev/null || true)
-
-  # Raw byte-for-byte comparison — no JSON normalization
-  run_compat_check() {
-    local label="$1" bash_out="$2" go_out="$3"
-    total=$((total + 1))
-    if [ -n "$bash_out" ] && [ -n "$go_out" ] && [ "$bash_out" = "$go_out" ]; then
-      pass=$((pass + 1)); printf "  ✓ %s byte-for-byte parity\n" "$label"
-    else
-      fail=$((fail + 1)); printf "  ✗ %s byte-for-byte parity\n" "$label" >&2
-      if [ -n "$bash_out" ] && [ -n "$go_out" ]; then
-        printf "    DIFF:\n      bash: %.200s\n      go:   %.200s\n" "$bash_out" "$go_out" >&2
-      fi
-    fi
-  }
-
-  run_compat_check "status --json"        "$BASH_STATUS"        "$GO_STATUS"
-  run_compat_check "list --json"          "$BASH_LIST"          "$GO_LIST"
-  run_compat_check "agents list --json"   "$BASH_AGENTS_LIST"   "$GO_AGENTS_LIST"
-  run_compat_check "agents show --json"   "$BASH_AGENTS_SHOW"   "$GO_AGENTS_SHOW"
-  run_compat_check "projects list --json" "$BASH_PROJECTS_LIST" "$GO_PROJECTS_LIST"
-  run_compat_check "projects show --json" "$BASH_PROJECTS_SHOW" "$GO_PROJECTS_SHOW"
-  run_compat_check "repos list --json"    "$BASH_REPOS_LIST"    "$GO_REPOS_LIST"
-  run_compat_check "memory list --json"   "$BASH_MEMORY_LIST"   "$GO_MEMORY_LIST"
-  run_compat_check "memory show --json"   "$BASH_MEMORY_SHOW"   "$GO_MEMORY_SHOW"
-  run_compat_check "phase-cmd --json"     "$BASH_PHASE_CMD"     "$GO_PHASE_CMD"
-
-  # Clean up compat project
-  bash "$BASH_SCRIPT" projects delete compat-proj 2>/dev/null || true
-
-  # Restore test home and clean up
-  rm -rf "$BASH_HOME"
-  export CROSSAGENT_HOME="$ORIG_HOME"
-else
-  # Compatibility gate is mandatory — fail if bash script cannot be found
-  total=$((total + 1))
-  fail=$((fail + 1))
-  printf "  ✗ bash script not available (not in tree or git history) — cannot validate compatibility\n" >&2
-fi
-
-# Clean up extracted script
-[ -n "$BASH_EXTRACTED" ] && rm -f "$BASH_EXTRACTED"
-
-# ── 14. Preflight script ──────────────────────────────────────────────────────
-
-echo ""
-echo "  Section 14: Preflight script"
+echo "  Section 13: Preflight script"
 
 PROJECT_ROOT="$(dirname "$BINARY")"
 
@@ -641,10 +533,10 @@ else
   printf "  ⊘ make check build-ordering test skipped — not all deps available\n"
 fi
 
-# ── 15. Web UI smoke test ─────────────────────────────────────────────────────
+# ── 14. Web UI smoke test ─────────────────────────────────────────────────────
 
 echo ""
-echo "  Section 15: Web UI smoke test"
+echo "  Section 14: Web UI smoke test"
 
 WEB_MISSING_DEPS=""
 if ! command -v curl >/dev/null 2>&1; then

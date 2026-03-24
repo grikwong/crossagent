@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,9 +63,16 @@ func wsConnPair(t *testing.T) (server *websocket.Conn, client *websocket.Conn) {
 		done <- nil
 	}()
 
-	cc, _, err := websocket.NewClient(cConn, &url.URL{Scheme: "ws", Host: "test"}, nil, 4096, 4096)
+	dialer := &websocket.Dialer{
+		NetDial: func(string, string) (net.Conn, error) {
+			return cConn, nil
+		},
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+	}
+	cc, _, err := dialer.Dial("ws://test/", nil)
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+		t.Fatalf("Dial: %v", err)
 	}
 
 	if err := <-done; err != nil {
