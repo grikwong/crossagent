@@ -269,10 +269,10 @@ if [ -x "./crossagent" ]; then
 else
   echo "…  building"
   if command -v go >/dev/null 2>&1; then
-    if go build -o "$ROOT/crossagent" ./cmd/crossagent; then
+    if make -C "$ROOT" build >/dev/null 2>&1; then
       echo "  ✓ crossagent binary built"
     else
-      echo "  ✗ go build failed"
+      echo "  ✗ make build failed"
       PASS=false
     fi
   else

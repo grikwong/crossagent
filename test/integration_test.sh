@@ -60,6 +60,25 @@ else
   fail=$((fail + 1)); printf "  ✗ version prints crossagent\n" >&2
 fi
 
+# Build a test binary with known commit hash to verify version format
+SRCDIR="$(cd "$(dirname "$BINARY")" && pwd)"
+SRCDIR="${SRCDIR%/}"
+# Find the repo root (where go.mod lives) by walking up from BINARY
+_repo="$(dirname "$BINARY")"
+while [ "$_repo" != "/" ] && [ ! -f "$_repo/go.mod" ]; do _repo="$(dirname "$_repo")"; done
+if [ -f "$_repo/go.mod" ]; then
+  TEST_BINARY="$CROSSAGENT_HOME/crossagent-version-test"
+  if go build -ldflags "-X main.Commit=abc1234" -o "$TEST_BINARY" "$_repo/cmd/crossagent" 2>/dev/null; then
+    total=$((total + 1))
+    if "$TEST_BINARY" version 2>&1 | grep -qx "crossagent dev-abc1234"; then
+      pass=$((pass + 1)); printf "  ✓ version with commit shows dev-<hash>\n"
+    else
+      fail=$((fail + 1)); printf "  ✗ version with commit shows dev-<hash>\n" >&2
+    fi
+  fi
+  rm -f "$TEST_BINARY"
+fi
+
 # ── 2. Workflow lifecycle ─────────────────────────────────────────────────────
 
 echo ""

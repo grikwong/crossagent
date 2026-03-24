@@ -1,7 +1,8 @@
 BINARY := crossagent
 PREFIX ?= /usr/local
 VERSION ?= dev
-LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "")
+LDFLAGS := -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 
 .PHONY: build test install uninstall check start clean
 

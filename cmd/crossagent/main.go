@@ -22,6 +22,14 @@ import (
 )
 
 var Version = "dev"
+var Commit = ""
+
+func displayVersion() string {
+	if Version == "dev" && Commit != "" {
+		return "dev-" + Commit
+	}
+	return Version
+}
 
 // ── ANSI Colors ─────────────────────────────────────────────────────────────
 
@@ -74,7 +82,7 @@ func main() {
 	// Handle --version and --help before EnsureDirs
 	switch cmd {
 	case "--version", "-v", "version":
-		fmt.Printf("crossagent %s\n", Version)
+		fmt.Printf("crossagent %s\n", displayVersion())
 		os.Exit(0)
 	case "--help", "-h", "help":
 		usage()
@@ -825,7 +833,7 @@ func cmdServe(args []string) {
 		}()
 	}
 
-	web.AppVersion = Version
+	web.AppVersion = displayVersion()
 	fmt.Fprintf(os.Stderr, "\n  Crossagent UI running at http://localhost:%s\n\n", port)
 	if err := web.Serve(addr); err != nil {
 		die(fmt.Sprintf("Server failed: %v", err))
@@ -2564,8 +2572,9 @@ func cmdMemoryEdit(globalFlag, projectFlag bool, projectName string) {
 // ── Usage ───────────────────────────────────────────────────────────────────
 
 func usage() {
+	fmt.Printf(`
+  crossagent — Cross-Model AI Agent Orchestrator v%s`, displayVersion())
 	fmt.Print(`
-  crossagent — Cross-Model AI Agent Orchestrator v` + Version + `
 
   WORKFLOW COMMANDS
     new <name> [opts]     Create a new workflow
