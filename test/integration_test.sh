@@ -701,6 +701,21 @@ else
       fail=$((fail + 1)); printf "  ✗ /api/list returns valid JSON\n" >&2
     fi
 
+    total=$((total + 1))
+    _api_ver="$(curl -sf "http://localhost:$WEB_PORT/api/version" 2>/dev/null)"
+    _cli_ver="$("$BINARY" version 2>&1 | sed 's/^crossagent //')"
+    if echo "$_api_ver" | _cli_ver="$_cli_ver" python3 -c "
+import sys,json,os
+d=json.load(sys.stdin)
+v=d['version']
+expected=os.environ['_cli_ver']
+assert v == expected, f'API version {v!r} != CLI version {expected!r}'
+" 2>/dev/null; then
+      pass=$((pass + 1)); printf "  ✓ /api/version matches CLI version (%s)\n" "$_cli_ver"
+    else
+      fail=$((fail + 1)); printf "  ✗ /api/version matches CLI version (expected '%s', got '%s')\n" "$_cli_ver" "$_api_ver" >&2
+    fi
+
     kill "$WEB_PID" 2>/dev/null || true
     wait "$WEB_PID" 2>/dev/null || true
   else

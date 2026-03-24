@@ -23,7 +23,7 @@ jobs:
         run: go vet ./...
 
       - name: Build
-        run: go build -o crossagent ./cmd/crossagent
+        run: go build -ldflags "-X main.Commit=$(git rev-parse --short HEAD)" -o crossagent ./cmd/crossagent
 
       - name: Unit tests
         run: go test ./...
@@ -49,7 +49,7 @@ jobs:
           go-version: '1.25'
 
       - name: Build
-        run: go build -o crossagent ./cmd/crossagent
+        run: go build -ldflags "-X main.Commit=$(git rev-parse --short HEAD)" -o crossagent ./cmd/crossagent
 
       - name: Integration tests (with web smoke)
         env:
