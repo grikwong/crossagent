@@ -288,14 +288,16 @@ func handleSpawn(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsM
 		return
 	}
 
-	cols := clamp(msg.Cols, 10, 500)
-	rows := clamp(msg.Rows, 5, 200)
+	cols := msg.Cols
+	rows := msg.Rows
 	if cols == 0 {
 		cols = 120
 	}
 	if rows == 0 {
 		rows = 30
 	}
+	cols = clamp(cols, 10, 500)
+	rows = clamp(rows, 5, 200)
 
 	cwd := phaseCmd.Cwd
 	if cwd == "" {

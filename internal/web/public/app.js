@@ -14,9 +14,7 @@ let resizeTimer = null;
 let resizeFrame = null;
 let lastReportedCols = 0;
 let lastReportedRows = 0;
-let syncOutputActive = false;
-let syncOutputBuffer = '';
-let syncOutputRemainder = '';
+// (Synchronized output Mode 2026 is handled natively by xterm.js 6.x)
 let pendingOutputFile = null;   // Track expected output file for auto-advance
 let pendingPhaseName = null;    // Track which phase is running
 let outputPollTimer = null;     // Poll for output file while session runs
@@ -487,80 +485,17 @@ function setGuide(text, type) {
 
 // ── Terminal ────────────────────────────────────────────────────────────────
 
-const SYNC_OUTPUT_START = '\x1b[?2026h';
-const SYNC_OUTPUT_END = '\x1b[?2026l';
-
-function matchingTerminalMarkerSuffix(text) {
-  const maxLen = Math.max(SYNC_OUTPUT_START.length, SYNC_OUTPUT_END.length) - 1;
-  const limit = Math.min(maxLen, text.length);
-
-  for (let len = limit; len > 0; len--) {
-    const suffix = text.slice(-len);
-    if (SYNC_OUTPUT_START.startsWith(suffix) || SYNC_OUTPUT_END.startsWith(suffix)) {
-      return len;
-    }
-  }
-
-  return 0;
-}
-
+// writeTerminalOutput passes PTY data directly to xterm.js.
+// xterm.js 6.x natively handles Mode 2026 (Synchronized Output) —
+// it buffers screen updates between \x1b[?2026h and \x1b[?2026l
+// and flushes them atomically, so no manual buffering is needed.
 function writeTerminalOutput(data) {
   if (!term || !data) return;
-
-  let text = syncOutputRemainder + data;
-  syncOutputRemainder = '';
-
-  while (text) {
-    if (!syncOutputActive) {
-      const startIdx = text.indexOf(SYNC_OUTPUT_START);
-      if (startIdx === -1) {
-        const suffixLen = matchingTerminalMarkerSuffix(text);
-        const safeText = suffixLen > 0 ? text.slice(0, -suffixLen) : text;
-        if (safeText) term.write(safeText);
-        syncOutputRemainder = suffixLen > 0 ? text.slice(-suffixLen) : '';
-        return;
-      }
-
-      if (startIdx > 0) {
-        term.write(text.slice(0, startIdx));
-      }
-
-      syncOutputActive = true;
-      text = text.slice(startIdx + SYNC_OUTPUT_START.length);
-      continue;
-    }
-
-    const endIdx = text.indexOf(SYNC_OUTPUT_END);
-    if (endIdx === -1) {
-      const suffixLen = matchingTerminalMarkerSuffix(text);
-      const safeText = suffixLen > 0 ? text.slice(0, -suffixLen) : text;
-      if (safeText) syncOutputBuffer += safeText;
-      syncOutputRemainder = suffixLen > 0 ? text.slice(-suffixLen) : '';
-      return;
-    }
-
-    syncOutputBuffer += text.slice(0, endIdx);
-    if (syncOutputBuffer) {
-      term.write(syncOutputBuffer);
-      syncOutputBuffer = '';
-    }
-    syncOutputActive = false;
-    text = text.slice(endIdx + SYNC_OUTPUT_END.length);
-  }
+  term.write(data);
 }
 
 function flushTerminalOutput() {
-  if (!term) return;
-
-  if (syncOutputActive && (syncOutputRemainder || syncOutputBuffer)) {
-    term.write(syncOutputBuffer + syncOutputRemainder);
-  } else if (syncOutputRemainder) {
-    term.write(syncOutputRemainder);
-  }
-
-  syncOutputActive = false;
-  syncOutputBuffer = '';
-  syncOutputRemainder = '';
+  // No-op: xterm.js handles synchronized output natively.
 }
 
 // Determine terminal font size based on viewport width
