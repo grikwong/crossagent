@@ -52,6 +52,9 @@ type wsMsg struct {
 
 // phaseCmdResult mirrors the JSON output from `crossagent phase-cmd --json`.
 type phaseCmdResult struct {
+	Agent       struct {
+		Adapter string `json:"adapter"`
+	} `json:"agent"`
 	Command     string   `json:"command"`
 	Args        []string `json:"args"`
 	Cwd         string   `json:"cwd"`
@@ -331,6 +334,7 @@ func handleSpawn(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsM
 	wsSend(ws, "spawned", map[string]any{
 		"pid":       cmd.Process.Pid,
 		"sessionID": session.ID,
+		"adapter":   phaseCmd.Agent.Adapter,
 	})
 
 	// Read PTY output in a goroutine, broadcast to all viewers

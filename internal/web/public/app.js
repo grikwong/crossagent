@@ -24,6 +24,7 @@ let retryLoopActive = false;    // Whether we're in an autonomous retry loop
 let projectsData = null;       // Cached projects list
 let selectedProjectFilter = ''; // Current project filter in topbar
 let viewingChatHistory = false; // Whether terminal is showing historical chat replay
+let currentAdapter = null;     // Active agent adapter ('claude' or 'codex') for PTY behavior
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
@@ -188,6 +189,12 @@ async function moveWorkflow(workflow, project) {
     if (data.error) {
       alert(data.error);
       return;
+    }
+    // Reconcile project filter so the moved workflow stays visible
+    if (selectedProjectFilter && selectedProjectFilter !== project) {
+      selectedProjectFilter = project;
+      const projectSel = document.getElementById('project-select');
+      if (projectSel) projectSel.value = project;
     }
     await fetchProjects();
     await fetchList();
@@ -556,6 +563,27 @@ function flushTerminalOutput() {
   syncOutputRemainder = '';
 }
 
+// Determine terminal font size based on viewport width
+function getTerminalFontSize() {
+  return window.innerWidth <= 480 ? 11 : 13;
+}
+
+// Apply adapter-specific terminal settings.
+// Claude Code uses a rich TUI that relies on accurate dimensions.
+// Codex uses simpler streaming output.
+function applyAdapterTerminalSettings(adapter) {
+  if (!term) return;
+  const fontSize = getTerminalFontSize();
+  if (term.options.fontSize !== fontSize) {
+    term.options.fontSize = fontSize;
+  }
+  // Claude Code's TUI is more sensitive to dimensions — force an immediate refit.
+  // Codex is more tolerant but still benefits from correct sizing.
+  if (adapter === 'claude') {
+    scheduleTerminalFit({ notifyPty: true, force: true });
+  }
+}
+
 function fitTerminal(options = {}) {
   const { notifyPty = false, force = false } = options;
   if (!term || !fitAddon) return;
@@ -616,7 +644,7 @@ function initTerminal() {
       white: '#e6edf3',
     },
     fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, monospace",
-    fontSize: 13,
+    fontSize: getTerminalFontSize(),
     lineHeight: 1.3,
     cursorBlink: true,
     cursorStyle: 'bar',
@@ -648,6 +676,11 @@ function initTerminal() {
   resizeObserver.observe(document.getElementById('terminal'));
 
   window.addEventListener('resize', () => {
+    // Adjust font size if viewport crosses a breakpoint
+    const newFontSize = getTerminalFontSize();
+    if (term.options.fontSize !== newFontSize) {
+      term.options.fontSize = newFontSize;
+    }
     scheduleTerminalFit({ notifyPty: true });
   });
 
@@ -685,15 +718,18 @@ function connectWS() {
       case 'spawned':
         sessionActive = true;
         currentSessionID = msg.sessionID || null;
+        currentAdapter = msg.adapter || null;
         isInputOwner = true;
-        setTerminalStatus('running', `Running — PID ${msg.pid}`);
+        setTerminalStatus('running', `Running — PID ${msg.pid}${msg.adapter ? ' (' + msg.adapter + ')' : ''}`);
         updateRunButton();
+        applyAdapterTerminalSettings(msg.adapter);
         scheduleTerminalFit({ notifyPty: true, force: true });
         break;
       case 'exit':
         flushTerminalOutput();
         sessionActive = false;
         currentSessionID = null;
+        currentAdapter = null;
         isInputOwner = true;
         stopOutputPolling();
         handleSessionExit(msg.code);
@@ -757,17 +793,11 @@ function connectWS() {
 
 async function tryReattachSession() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-  // If we already know a session ID from a previous connection, try reattaching
-  if (currentSessionID) {
-    ws.send(JSON.stringify({ type: 'attach', sessionID: currentSessionID }));
-    return;
-  }
-
-  // Otherwise, query the server for running sessions and find one matching
-  // the current workflow
   if (!state || !state.name) return;
 
+  // Always query the server for running sessions and match against the
+  // current workflow. This avoids reattaching to a stale session from a
+  // previously selected workflow.
   try {
     const sessions = await fetch('/api/sessions').then(r => r.json());
     if (!Array.isArray(sessions)) return;
@@ -784,6 +814,9 @@ async function tryReattachSession() {
     if (match) {
       currentSessionID = match.id;
       ws.send(JSON.stringify({ type: 'attach', sessionID: match.id }));
+    } else if (currentSessionID) {
+      // No running session for this workflow — clear stale ID
+      currentSessionID = null;
     }
   } catch {
     // Non-critical — if we can't query sessions, just continue normally
@@ -887,10 +920,10 @@ async function onOutputDetected() {
   updateRunButton();
   if (phaseName) loadArtifact(phaseName);
 
-  // If we're in a retry loop, auto-run the next phase
-  if (retryLoopActive && state && !state.complete) {
+  // Auto-run the next phase (initial sequential advance or retry)
+  if (state && !state.complete) {
     await sleep(1500);
-    await autoRunNextPhase();
+    await autoRunNextPhase({ isRetry: retryLoopActive });
   }
 }
 
@@ -924,7 +957,7 @@ async function handleSupervisorDecision(phaseName) {
       // Continue retry loop or auto-run next phase
       if ((retryLoopActive || result.action === 'pass') && state && !state.complete) {
         await sleep(1500);
-        await autoRunNextPhase();
+        await autoRunNextPhase({ isRetry: retryLoopActive });
       }
       return;
     }
@@ -952,7 +985,7 @@ async function handleSupervisorDecision(phaseName) {
       updateRunButton();
 
       await sleep(2000);
-      await autoRunNextPhase();
+      await autoRunNextPhase({ isRetry: true });
       return;
     }
 
@@ -979,7 +1012,7 @@ async function handleSupervisorDecision(phaseName) {
   }
 }
 
-async function autoRunNextPhase() {
+async function autoRunNextPhase({ isRetry = false } = {}) {
   if (!state || state.complete || sessionActive) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
@@ -987,11 +1020,14 @@ async function autoRunNextPhase() {
   const phaseName = PHASE_NAMES[pn];
   if (!phaseName) return;
 
-  term.writeln(`\x1b[2m  Auto-running ${capitalize(phaseName)} phase...\x1b[0m\r\n`);
-  setGuide(`Auto-running ${phaseName} phase (retry)...`, 'warning');
+  const suffix = isRetry ? ' (retry)' : '';
+  const guideStyle = isRetry ? 'warning' : 'info';
+  term.writeln(`\x1b[2m  Auto-running ${capitalize(phaseName)} phase${suffix}...\x1b[0m\r\n`);
+  setGuide(`Auto-running ${phaseName} phase${suffix}...`, guideStyle);
 
+  const forceParam = isRetry ? '?force=true' : '';
   try {
-    const config = await wfApi(`/phase-cmd/${phaseName}?force=true`);
+    const config = await wfApi(`/phase-cmd/${phaseName}${forceParam}`);
     if (config.error) {
       retryLoopActive = false;
       term.writeln(`\r\n\x1b[31m  Error: ${config.error}\x1b[0m\r\n`);
@@ -1002,14 +1038,14 @@ async function autoRunNextPhase() {
     pendingPhaseName = phaseName;
 
     term.clear();
-    term.writeln(`\x1b[2m  Phase ${pn}: ${capitalize(phaseName)} (retry)\x1b[0m`);
+    term.writeln(`\x1b[2m  Phase ${pn}: ${capitalize(phaseName)}${suffix}\x1b[0m`);
     term.writeln(`\x1b[2m  The AI agent will run in this terminal.\x1b[0m\r\n`);
 
     ws.send(JSON.stringify({
       type: 'spawn',
       phaseName: phaseName,
       workflow: state.name,
-      force: true,
+      force: isRetry,
       cols: term.cols,
       rows: term.rows,
     }));
@@ -1065,10 +1101,10 @@ async function handleSessionExit(exitCode) {
       term.writeln(`\x1b[32m  ${capitalize(phaseName || 'Phase')} complete! Advancing...\x1b[0m\r\n`);
       await refreshAfterAdvance(phaseName);
 
-      // Continue retry loop if active
-      if (retryLoopActive && state && !state.complete) {
+      // Auto-run the next phase (initial sequential advance or retry)
+      if (state && !state.complete) {
         await sleep(1500);
-        await autoRunNextPhase();
+        await autoRunNextPhase({ isRetry: retryLoopActive });
       }
       return;
     }
@@ -1281,8 +1317,25 @@ async function createWorkflow(name, repo, description, addDirs, project) {
     term.writeln(`\x1b[32m  Workflow "${name}" created.\x1b[0m`);
     term.writeln(`\x1b[2m  Click "Run Plan" to start the planning phase.\x1b[0m\r\n`);
     await fetchProjects();
+
+    // Reconcile project filter so the new workflow is visible in the dropdown.
+    // If the current filter would hide the new workflow, switch the filter to
+    // the workflow's project (or clear it).
+    const workflowProject = project || 'default';
+    if (selectedProjectFilter && selectedProjectFilter !== workflowProject) {
+      selectedProjectFilter = workflowProject;
+      const projectSel = document.getElementById('project-select');
+      if (projectSel) projectSel.value = workflowProject;
+    }
+
     await fetchList();
-    await fetchStatus();
+
+    // Auto-select the newly created workflow
+    await switchWorkflow(name);
+
+    // Update the dropdown to reflect the selection
+    const sel = document.getElementById('workflow-select');
+    if (sel) sel.value = name;
 
     // Auto-suggest project if created under "default"
     if (!project || project === 'default') {
@@ -1310,9 +1363,20 @@ async function switchWorkflow(name) {
     state.name = name;
     retryLoopActive = false;
     activeArtifact = null;
+
+    // Clear stale session state so tryReattachSession() doesn't bind the
+    // terminal to the previous workflow's PTY.
+    currentSessionID = null;
+    currentAdapter = null;
+    sessionActive = false;
+    pendingOutputFile = null;
+    pendingPhaseName = null;
+    stopOutputPolling();
+
     document.querySelectorAll('.artifact-item').forEach(el => el.classList.remove('active'));
     document.getElementById('artifact-viewer').innerHTML = '<p class="muted centered">Select an artifact from the sidebar to view it</p>';
     document.getElementById('artifact-title').textContent = 'Artifact Viewer';
+    setTerminalStatus('idle', '');
     await fetchStatus();
     // Try to reattach to any running PTY session for the newly selected workflow
     await tryReattachSession();
@@ -1544,6 +1608,37 @@ function endTour() {
 
 // ── Event Binding ───────────────────────────────────────────────────────────
 
+function closeSidebar() {
+  const sidebar = document.querySelector('.sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if (sidebar) sidebar.classList.remove('open');
+  if (backdrop) backdrop.classList.remove('visible');
+}
+
+function initSidebarToggle() {
+  const toggle = document.getElementById('sidebar-toggle');
+  const sidebar = document.querySelector('.sidebar');
+  if (!toggle || !sidebar) return;
+
+  // Create backdrop overlay for mobile sidebar
+  const backdrop = document.createElement('div');
+  backdrop.id = 'sidebar-backdrop';
+  backdrop.className = 'sidebar-backdrop';
+  document.body.appendChild(backdrop);
+
+  toggle.addEventListener('click', () => {
+    sidebar.classList.toggle('open');
+    backdrop.classList.toggle('visible');
+    // Refit terminal when sidebar visibility changes
+    scheduleTerminalFit({ notifyPty: true, force: true });
+  });
+
+  backdrop.addEventListener('click', () => {
+    closeSidebar();
+    scheduleTerminalFit({ notifyPty: true, force: true });
+  });
+}
+
 function bindEvents() {
   document.getElementById('run-phase-btn').addEventListener('click', runPhase);
   document.getElementById('advance-btn').addEventListener('click', advancePhase);
@@ -1551,10 +1646,14 @@ function bindEvents() {
 
   document.getElementById('workflow-select').addEventListener('change', (e) => {
     switchWorkflow(e.target.value);
+    closeSidebar();
   });
 
   document.querySelectorAll('.artifact-item').forEach(el => {
-    el.addEventListener('click', () => loadArtifact(el.dataset.artifact));
+    el.addEventListener('click', () => {
+      loadArtifact(el.dataset.artifact);
+      closeSidebar();
+    });
   });
 
   // Clickable completed phases — load chat history replay
@@ -1727,6 +1826,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   initTerminal();
   connectWS();
+  initSidebarToggle();
   bindEvents();
   await fetchProjects();
   await fetchList();
