@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.0](https://github.com/grikwong/crossagent/compare/v1.4.0...v1.5.0) (2026-03-27)
+
+
+### Features
+
+* responsive web UI and mobile sidebar ([e3fc15b](https://github.com/grikwong/crossagent/commit/e3fc15bbbdb4cfaa2a4c8d1e9b31bfff600f0ba3))
+* upgrade xterm.js to 6.x ([d3bee77](https://github.com/grikwong/crossagent/commit/d3bee77368280dbe6daa1fe7b8523f88d0485f9d))
+
+
+### Bug Fixes
+
+* manual Mode 2026 synchronized output ([f3f7600](https://github.com/grikwong/crossagent/commit/f3f7600ccbc899cc693cf38d18a4add32a64e150))
+
 ## [1.4.0](https://github.com/grikwong/crossagent/compare/v1.3.0...v1.4.0) (2026-03-24)
 
 
