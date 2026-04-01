@@ -68,16 +68,32 @@ func GeneratePlanPrompt(wfDir string, cfg *state.Config) (string, error) {
 
 	retryMode, attemptNum, revertCtx := getRetryContext(wfDir, cfg)
 
+	// Followup context injection — mutually exclusive with retry mode
+	var followupMode bool
+	var followupRound int
+	var followupCtx string
+	if !retryMode {
+		followupFile := filepath.Join(wfDir, "prompts", "followup-context.md")
+		if data, err := os.ReadFile(followupFile); err == nil && len(data) > 0 {
+			followupMode = true
+			followupRound = cfg.FollowupRound
+			followupCtx = string(data)
+		}
+	}
+
 	data := PlanData{
-		GeneralPath:             generalPath,
-		Description:             desc,
-		DescPath:                filepath.Join(wfDir, "description"),
-		PlanPath:                filepath.Join(wfDir, "plan.md"),
-		WfDir:                   wfDir,
-		RetryMode:               retryMode,
-		AttemptNum:              attemptNum,
-		RevertContext:           revertCtx,
-		MemoryContext:           memCtx,
+		GeneralPath:              generalPath,
+		Description:              desc,
+		DescPath:                 filepath.Join(wfDir, "description"),
+		PlanPath:                 filepath.Join(wfDir, "plan.md"),
+		WfDir:                    wfDir,
+		RetryMode:                retryMode,
+		AttemptNum:               attemptNum,
+		RevertContext:            revertCtx,
+		FollowupMode:             followupMode,
+		FollowupRound:            followupRound,
+		FollowupContext:          followupCtx,
+		MemoryContext:            memCtx,
 		MemoryUpdateInstructions: memInstr,
 	}
 

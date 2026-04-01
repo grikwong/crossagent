@@ -21,6 +21,7 @@ type Config struct {
 	VerifyAgent    string
 	RetryCount     int
 	MaxRetries     int
+	FollowupRound  int
 }
 
 
@@ -78,6 +79,8 @@ func setConfigField(cfg *Config, key, val string) {
 		cfg.RetryCount = atoi(val)
 	case "max_retries":
 		cfg.MaxRetries = atoi(val)
+	case "followup_round":
+		cfg.FollowupRound = atoi(val)
 	}
 }
 
@@ -117,6 +120,9 @@ func WriteConfig(dir string, cfg *Config) error {
 	}
 	if cfg.MaxRetries > 0 {
 		addLine("max_retries", fmt.Sprintf("%d", cfg.MaxRetries))
+	}
+	if cfg.FollowupRound > 0 {
+		addLine("followup_round", fmt.Sprintf("%d", cfg.FollowupRound))
 	}
 
 	content := strings.Join(lines, "\n") + "\n"

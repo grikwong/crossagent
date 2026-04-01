@@ -616,6 +616,103 @@ func TestVerifyPromptParityWithBash(t *testing.T) {
 	}
 }
 
+func TestGeneratePlanPromptFollowupMode(t *testing.T) {
+	_, wfDir := setupTestEnv(t)
+
+	// Create followup context to trigger followup mode
+	os.WriteFile(filepath.Join(wfDir, "prompts", "followup-context.md"),
+		[]byte("# Previous Round 1 Context\n\nPlan was to add feature X.\n"), 0644)
+	// Update config with followup_round
+	os.WriteFile(filepath.Join(wfDir, "config"),
+		[]byte("repo=/tmp/test-repo\nproject=test-proj\nfollowup_round=1\n"), 0644)
+
+	cfg, _ := state.ReadConfig(wfDir)
+
+	path, err := GeneratePlanPrompt(wfDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "FOLLOWUP MODE") {
+		t.Error("plan.md should contain FOLLOWUP MODE with followup context")
+	}
+	if !strings.Contains(content, "Round 1") {
+		t.Error("plan.md should reference round number 1")
+	}
+	if !strings.Contains(content, "Previous Round 1 Context") {
+		t.Error("plan.md should contain followup context content")
+	}
+	// Should NOT have retry content
+	if strings.Contains(content, "RETRY MODE") {
+		t.Error("plan.md should not contain RETRY MODE in followup mode")
+	}
+}
+
+func TestGeneratePlanPromptRetryTakesPrecedenceOverFollowup(t *testing.T) {
+	_, wfDir := setupTestEnv(t)
+
+	// Create both revert context AND followup context
+	os.WriteFile(filepath.Join(wfDir, "prompts", "revert-context.md"),
+		[]byte("Previous issues here\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "prompts", "followup-context.md"),
+		[]byte("# Previous Round 1 Context\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "config"),
+		[]byte("repo=/tmp/test-repo\nproject=test-proj\nretry_count=1\nfollowup_round=1\n"), 0644)
+
+	cfg, _ := state.ReadConfig(wfDir)
+
+	path, err := GeneratePlanPrompt(wfDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "RETRY MODE") {
+		t.Error("plan.md should contain RETRY MODE when both contexts exist")
+	}
+	if strings.Contains(content, "FOLLOWUP MODE") {
+		t.Error("plan.md should NOT contain FOLLOWUP MODE when retry takes precedence")
+	}
+}
+
+func TestGeneratePlanPromptNoFollowupOrRetry(t *testing.T) {
+	_, wfDir := setupTestEnv(t)
+
+	cfg := &state.Config{
+		Repo:    "/tmp/test-repo",
+		Project: "test-proj",
+	}
+
+	path, err := GeneratePlanPrompt(wfDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "FOLLOWUP MODE") {
+		t.Error("plan.md should not contain FOLLOWUP MODE without followup context")
+	}
+	if strings.Contains(content, "RETRY MODE") {
+		t.Error("plan.md should not contain RETRY MODE without revert context")
+	}
+}
+
 func TestGenerateGeneralWithAddDirs(t *testing.T) {
 	_, wfDir := setupTestEnv(t)
 

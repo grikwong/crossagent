@@ -98,10 +98,12 @@ type StatusJSON struct {
 	Created     string              `json:"created"`
 	WorkflowDir string              `json:"workflow_dir"`
 	Agents      OrderedAgents       `json:"agents"`
-	RetryCount  int                 `json:"retry_count"`
-	MaxRetries  int                 `json:"max_retries"`
-	Artifacts   OrderedArtifacts    `json:"artifacts"`
-	ChatHistory OrderedChatHistory  `json:"chat_history"`
+	RetryCount    int                 `json:"retry_count"`
+	MaxRetries    int                 `json:"max_retries"`
+	FollowupRound int                `json:"followup_round,omitempty"`
+	Rounds        []RoundJSON        `json:"rounds,omitempty"`
+	Artifacts     OrderedArtifacts   `json:"artifacts"`
+	ChatHistory   OrderedChatHistory `json:"chat_history"`
 }
 
 // OrderedChatHistory holds per-phase chat history entries in fixed order.
@@ -131,6 +133,33 @@ type ArtifactJSON struct {
 	Exists bool   `json:"exists"`
 	Path   string `json:"path"`
 	Lines  int    `json:"lines,omitempty"`
+}
+
+// AttemptFileJSON represents an archived retry-attempt artifact or chat log.
+type AttemptFileJSON struct {
+	Phase   string `json:"phase"`
+	Attempt int    `json:"attempt"`
+	Exists  bool   `json:"exists"`
+	Path    string `json:"path"`
+	Lines   int    `json:"lines,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+}
+
+// RoundJSON represents an archived round in status JSON.
+type RoundJSON struct {
+	Number             int                `json:"number"`
+	Artifacts          OrderedArtifacts   `json:"artifacts"`
+	ChatHistory        OrderedChatHistory `json:"chat_history"`
+	AttemptArtifacts   []AttemptFileJSON  `json:"attempt_artifacts,omitempty"`
+	AttemptChatHistory []AttemptFileJSON  `json:"attempt_chat_history,omitempty"`
+}
+
+// FollowupJSON is the JSON response for the followup command.
+type FollowupJSON struct {
+	Action          string `json:"action"`
+	Round           int    `json:"round"`
+	WorkflowName    string `json:"workflow_name"`
+	FollowupContext string `json:"followup_context"`
 }
 
 // ── List ────────────────────────────────────────────────────────────────────
@@ -402,6 +431,24 @@ func PrintStatusJSON(s StatusJSON) error {
 	buf.WriteString("  },\n")
 	fmt.Fprintf(&buf, "  \"retry_count\": %d,\n", s.RetryCount)
 	fmt.Fprintf(&buf, "  \"max_retries\": %d,\n", s.MaxRetries)
+	if s.FollowupRound > 0 {
+		fmt.Fprintf(&buf, "  \"followup_round\": %d,\n", s.FollowupRound)
+	}
+	if len(s.Rounds) > 0 {
+		buf.WriteString("  \"rounds\": [\n")
+		for i, r := range s.Rounds {
+			if len(r.AttemptArtifacts) > 0 || len(r.AttemptChatHistory) > 0 {
+			fmt.Fprintf(&buf, "    {\"number\": %d, \"artifacts\": %s, \"chat_history\": %s, \"attempt_artifacts\": %s, \"attempt_chat_history\": %s}", r.Number, mc(r.Artifacts), mc(r.ChatHistory), mc(r.AttemptArtifacts), mc(r.AttemptChatHistory))
+		} else {
+			fmt.Fprintf(&buf, "    {\"number\": %d, \"artifacts\": %s, \"chat_history\": %s}", r.Number, mc(r.Artifacts), mc(r.ChatHistory))
+		}
+			if i < len(s.Rounds)-1 {
+				buf.WriteByte(',')
+			}
+			buf.WriteByte('\n')
+		}
+		buf.WriteString("  ],\n")
+	}
 	buf.WriteString("  \"artifacts\": {\n")
 	fmt.Fprintf(&buf, "    \"plan\": %s,\n", mc(s.Artifacts.Plan))
 	fmt.Fprintf(&buf, "    \"review\": %s,\n", mc(s.Artifacts.Review))

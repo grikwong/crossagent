@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -92,6 +94,23 @@ func clamp(val, min, max uint16) uint16 {
 		return max
 	}
 	return val
+}
+
+// splitUTF8 splits p into a valid UTF-8 prefix and a trailing incomplete
+// multi-byte sequence (if any). The remainder should be prepended to the next
+// read to reassemble the full codepoint.
+func splitUTF8(p []byte) (valid, remainder []byte) {
+	if utf8.Valid(p) {
+		return p, nil
+	}
+	// Walk backwards (up to utf8.UTFMax bytes) to find the incomplete trailing rune.
+	for i := 1; i <= utf8.UTFMax && i <= len(p); i++ {
+		if utf8.Valid(p[:len(p)-i]) {
+			return p[:len(p)-i], p[len(p)-i:]
+		}
+	}
+	// Entire slice is invalid — return as-is to avoid swallowing data.
+	return p, nil
 }
 
 // cleanEnv returns the current environment with Claude Code internal vars removed
@@ -339,23 +358,92 @@ func handleSpawn(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsM
 		"adapter":   phaseCmd.Agent.Adapter,
 	})
 
-	// Read PTY output in a goroutine, broadcast to all viewers
+	// Read PTY output in a goroutine, broadcast to all viewers.
+	// Uses a two-goroutine design: an inner goroutine reads from the PTY with
+	// UTF-8 boundary safety, and an outer goroutine coalesces reads before
+	// broadcasting to reduce WebSocket message storms during TUI redraws.
 	go func() {
 		defer close(session.Done)
 
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := ptmx.Read(buf)
-			if n > 0 {
-				data := string(buf[:n])
-				session.OutputBuf.Write(buf[:n])
-				session.appendChat(data)
-				session.Broadcast("output", map[string]any{"data": data})
+		const (
+			coalesceInterval = 8 * time.Millisecond // just over half a 60fps frame
+			coalesceMaxSize  = 64 * 1024            // force-flush at 64KB
+		)
+
+		type readResult struct {
+			data []byte // nil on error/EOF
+			err  error
+		}
+		readCh := make(chan readResult, 4)
+
+		// Inner goroutine: reads from PTY, handles UTF-8 boundaries.
+		go func() {
+			buf := make([]byte, 32*1024)
+			var remainder []byte
+			for {
+				n, err := ptmx.Read(buf)
+				if n > 0 {
+					var chunk []byte
+					if len(remainder) > 0 {
+						chunk = append(remainder, buf[:n]...)
+						remainder = nil
+					} else {
+						chunk = make([]byte, n)
+						copy(chunk, buf[:n])
+					}
+					valid, rem := splitUTF8(chunk)
+					remainder = rem
+					if len(valid) > 0 {
+						readCh <- readResult{data: valid}
+					}
+				}
+				if err != nil {
+					// Flush any incomplete UTF-8 remainder on PTY close.
+					if len(remainder) > 0 {
+						readCh <- readResult{data: remainder}
+					}
+					readCh <- readResult{err: err}
+					return
+				}
 			}
-			if err != nil {
-				break
+		}()
+
+		// Outer loop: coalesces output before broadcasting.
+		var coalesceBuf []byte
+		coalesceTimer := time.NewTimer(coalesceInterval)
+		coalesceTimer.Stop()
+
+		flushCoalesced := func() {
+			if len(coalesceBuf) == 0 {
+				return
+			}
+			session.Broadcast("output", map[string]any{"data": string(coalesceBuf)})
+			coalesceBuf = coalesceBuf[:0]
+		}
+
+	loop:
+		for {
+			select {
+			case r := <-readCh:
+				if r.err != nil {
+					flushCoalesced()
+					break loop
+				}
+				session.OutputBuf.Write(r.data)
+				session.appendChat(string(r.data))
+				coalesceBuf = append(coalesceBuf, r.data...)
+				if len(coalesceBuf) >= coalesceMaxSize {
+					coalesceTimer.Stop()
+					flushCoalesced()
+				} else {
+					coalesceTimer.Reset(coalesceInterval)
+				}
+			case <-coalesceTimer.C:
+				flushCoalesced()
 			}
 		}
+
+		coalesceTimer.Stop()
 
 		// PTY closed — wait for process to finish and get real exit code
 		exitCode := 0

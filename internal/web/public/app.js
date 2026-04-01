@@ -17,6 +17,8 @@ let lastReportedRows = 0;
 let syncOutputActive = false;
 let syncOutputBuffer = '';
 let syncOutputRemainder = '';
+let pendingTerminalWrites = '';
+let terminalWriteRAF = null;
 let pendingOutputFile = null;   // Track expected output file for auto-advance
 let pendingPhaseName = null;    // Track which phase is running
 let outputPollTimer = null;     // Poll for output file while session runs
@@ -24,6 +26,7 @@ let retryLoopActive = false;    // Whether we're in an autonomous retry loop
 let projectsData = null;       // Cached projects list
 let selectedProjectFilter = ''; // Current project filter in topbar
 let viewingChatHistory = false; // Whether terminal is showing historical chat replay
+let selectedRound = null;      // Selected archived round number (null = current)
 let currentAdapter = null;     // Active agent adapter ('claude' or 'codex') for PTY behavior
 
 // ── API ─────────────────────────────────────────────────────────────────────
@@ -346,12 +349,21 @@ function renderPhaseTracker() {
   const pn = state.complete ? 5 : parseInt(state.phase, 10);
   const phaseKeys = ['', 'plan', 'review', 'implement', 'verify'];
 
+  // When viewing an archived round, mark all phases as completed
+  const viewingRound = selectedRound !== null;
+
   document.querySelectorAll('.phase-item').forEach(el => {
     const p = parseInt(el.dataset.phase, 10);
     el.classList.remove('completed', 'current', 'pending');
-    if (p < pn) el.classList.add('completed');
-    else if (p === pn) el.classList.add('current');
-    else el.classList.add('pending');
+    if (viewingRound) {
+      el.classList.add('completed');
+    } else if (p < pn) {
+      el.classList.add('completed');
+    } else if (p === pn) {
+      el.classList.add('current');
+    } else {
+      el.classList.add('pending');
+    }
 
     const key = phaseKeys[p];
     const toolEl = el.querySelector('.phase-tool');
@@ -359,13 +371,34 @@ function renderPhaseTracker() {
       toolEl.textContent = state.agents[key].display_name || state.agents[key].name;
     }
   });
+
+  // Show round indicator in phase header
+  const phaseHeader = document.querySelector('#phase-tracker').closest('.panel').querySelector('.panel-header');
+  if (state.followup_round > 0) {
+    const currentRound = viewingRound ? selectedRound : state.followup_round + 1;
+    const label = viewingRound ? `Round ${currentRound}` : `Round ${currentRound}`;
+    if (!phaseHeader.querySelector('.round-indicator')) {
+      const span = document.createElement('span');
+      span.className = 'round-indicator';
+      phaseHeader.appendChild(span);
+    }
+    phaseHeader.querySelector('.round-indicator').textContent = label;
+  } else {
+    const indicator = phaseHeader.querySelector('.round-indicator');
+    if (indicator) indicator.remove();
+  }
 }
 
 function renderArtifactList() {
   if (!state) return;
+  // Use round artifacts if viewing an archived round
+  const round = selectedRound !== null && state.rounds
+    ? state.rounds.find(r => r.number === selectedRound) || {}
+    : null;
+  const artifacts = round ? (round.artifacts || {}) : state.artifacts;
   document.querySelectorAll('.artifact-item').forEach(el => {
     const type = el.dataset.artifact;
-    const art = state.artifacts[type];
+    const art = artifacts[type];
     el.classList.toggle('exists', art && art.exists);
     const icon = el.querySelector('.artifact-icon');
     if (art && art.exists) {
@@ -374,6 +407,42 @@ function renderArtifactList() {
       icon.textContent = '-';
     }
   });
+  // Render attempt artifacts/chat-history when viewing an archived round
+  const attemptList = document.getElementById('attempt-artifacts-list');
+  if (attemptList) {
+    if (round && ((round.attempt_artifacts && round.attempt_artifacts.length) ||
+                  (round.attempt_chat_history && round.attempt_chat_history.length))) {
+      let html = '<div class="attempt-section-label">Retry Attempts</div>';
+      (round.attempt_artifacts || []).forEach(a => {
+        html += `<div class="artifact-item exists attempt-item" data-attempt-phase="${esc(a.phase)}" data-attempt-num="${a.attempt}" data-attempt-type="artifact">
+          <span class="artifact-icon">\u2713</span> ${esc(a.phase)}.attempt-${a.attempt}.md
+        </div>`;
+      });
+      (round.attempt_chat_history || []).forEach(a => {
+        html += `<div class="artifact-item exists attempt-item" data-attempt-phase="${esc(a.phase)}" data-attempt-num="${a.attempt}" data-attempt-type="chat">
+          <span class="artifact-icon">\u2713</span> ${esc(a.phase)}.attempt-${a.attempt}.log
+        </div>`;
+      });
+      attemptList.innerHTML = html;
+      // Bind click handlers for attempt items
+      attemptList.querySelectorAll('.attempt-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const phase = el.dataset.attemptPhase;
+          const attempt = el.dataset.attemptNum;
+          const type = el.dataset.attemptType;
+          if (type === 'artifact') {
+            loadAttemptArtifact(phase, attempt, selectedRound);
+          } else {
+            loadChatHistory(phase, selectedRound, attempt);
+          }
+          closeSidebar();
+        });
+      });
+    } else {
+      attemptList.innerHTML = '';
+    }
+  }
+  renderRoundSelector();
 }
 
 function renderDirectories() {
@@ -436,6 +505,10 @@ function renderInfo() {
   if (state.retry_count > 0) {
     retryInfo = `<div class="info-row"><span class="info-label">Retry</span><span class="info-value">${state.retry_count}/${state.max_retries}</span></div>`;
   }
+  let roundInfo = '';
+  if (state.followup_round > 0) {
+    roundInfo = `<div class="info-row"><span class="info-label">Round</span><span class="info-value">${state.followup_round + 1}</span></div>`;
+  }
   const projectInfo = state.project ? `<div class="info-row"><span class="info-label">Project</span><span class="info-value">${esc(state.project)}</span></div>` : '';
   el.innerHTML = `
     ${projectInfo}
@@ -443,6 +516,7 @@ function renderInfo() {
     <div class="info-row"><span class="info-label">Phase</span><span class="info-value">${esc(state.phase_label)}</span></div>
     <div class="info-row"><span class="info-label">Created</span><span class="info-value">${esc(state.created)}</span></div>
     ${retryInfo}
+    ${roundInfo}
     ${state.description ? `<div class="info-row"><span class="info-label">Desc</span><span class="info-value">${esc(state.description)}</span></div>` : ''}
   `;
 }
@@ -451,16 +525,110 @@ function renderStatus() {
   document.title = state ? `Crossagent - ${state.name}` : 'Crossagent';
 }
 
+// ── Round Selector ─────────────────────────────────────────────────────────
+
+function renderRoundSelector() {
+  const sel = document.getElementById('round-select');
+  if (!state || !state.followup_round || state.followup_round === 0) {
+    sel.classList.add('hidden');
+    selectedRound = null;
+    return;
+  }
+  sel.classList.remove('hidden');
+  const currentValue = sel.value;
+  sel.innerHTML = '<option value="">Current</option>';
+  for (let i = 1; i <= state.followup_round; i++) {
+    sel.innerHTML += `<option value="${i}">Round ${i}</option>`;
+  }
+  // Restore selection if still valid
+  if (currentValue && parseInt(currentValue, 10) <= state.followup_round) {
+    sel.value = currentValue;
+  }
+}
+
+// ── Followup ───────────────────────────────────────────────────────────────
+
+function handleFollowup() {
+  const modal = document.getElementById('followup-modal');
+  const descInput = document.getElementById('followup-description');
+  const cancelBtn = document.getElementById('followup-cancel');
+  const confirmBtn = document.getElementById('followup-confirm');
+  const backdrop = modal.querySelector('.modal-backdrop');
+  let settled = false;
+
+  modal.classList.remove('hidden');
+  descInput.value = '';
+  descInput.focus();
+
+  const cleanup = () => {
+    if (settled) return;
+    settled = true;
+    modal.classList.add('hidden');
+    cancelBtn.removeEventListener('click', onCancel);
+    confirmBtn.removeEventListener('click', onConfirm);
+    backdrop.removeEventListener('click', onCancel);
+    document.removeEventListener('keydown', onEscape, { capture: true });
+  };
+
+  const onCancel = () => cleanup();
+
+  const onEscape = (e) => {
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
+      e.stopImmediatePropagation();
+      cleanup();
+    }
+  };
+
+  const onConfirm = async () => {
+    const description = descInput.value.trim();
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Processing...';
+    try {
+      const body = {};
+      if (description) body.description = description;
+      const result = await wfApi('/followup', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      if (result.error) {
+        setGuide(result.error, 'error');
+      } else {
+        selectedRound = null;
+        await fetchStatus();
+        await fetchList();
+        setGuide(`Follow-up round ${result.round} started. Click "Run Plan" to begin.`);
+      }
+    } catch (err) {
+      setGuide(`Follow-up failed: ${err.message}`, 'error');
+    }
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = 'Follow Up';
+    cleanup();
+  };
+
+  cancelBtn.addEventListener('click', onCancel);
+  confirmBtn.addEventListener('click', onConfirm);
+  backdrop.addEventListener('click', onCancel);
+  document.addEventListener('keydown', onEscape, { capture: true });
+}
+
 function updateRunButton() {
   const btn = document.getElementById('run-phase-btn');
+  const followupBtn = document.getElementById('followup-btn');
   if (!state || state.complete) {
     btn.textContent = 'Workflow Complete';
     btn.disabled = true;
+    // Show followup button for completed workflows
     if (state && state.complete && !sessionActive) {
-      setGuide('Workflow complete. Review artifacts in the sidebar.');
+      followupBtn.classList.remove('hidden');
+      const roundInfo = state.followup_round > 0 ? ` (Round ${state.followup_round + 1})` : '';
+      setGuide(`Workflow complete${roundInfo}. Review artifacts or click Follow Up to continue.`);
+    } else {
+      followupBtn.classList.add('hidden');
     }
     return;
   }
+  followupBtn.classList.add('hidden');
   const pn = parseInt(state.phase, 10);
   const name = PHASE_NAMES[pn] || 'phase';
   btn.textContent = `Run ${capitalize(name)}`;
@@ -504,6 +672,21 @@ function matchingTerminalMarkerSuffix(text) {
   return 0;
 }
 
+// scheduleTerminalWrite batches text for the next animation frame, coalescing
+// rapid writes into a single xterm.js render pass to prevent flickering.
+function scheduleTerminalWrite(text) {
+  pendingTerminalWrites += text;
+  if (terminalWriteRAF === null) {
+    terminalWriteRAF = requestAnimationFrame(() => {
+      terminalWriteRAF = null;
+      if (pendingTerminalWrites && term) {
+        term.write(pendingTerminalWrites);
+        pendingTerminalWrites = '';
+      }
+    });
+  }
+}
+
 function writeTerminalOutput(data) {
   if (!term || !data) return;
 
@@ -516,13 +699,13 @@ function writeTerminalOutput(data) {
       if (startIdx === -1) {
         const suffixLen = matchingTerminalMarkerSuffix(text);
         const safeText = suffixLen > 0 ? text.slice(0, -suffixLen) : text;
-        if (safeText) term.write(safeText);
+        if (safeText) scheduleTerminalWrite(safeText);
         syncOutputRemainder = suffixLen > 0 ? text.slice(-suffixLen) : '';
         return;
       }
 
       if (startIdx > 0) {
-        term.write(text.slice(0, startIdx));
+        scheduleTerminalWrite(text.slice(0, startIdx));
       }
 
       syncOutputActive = true;
@@ -541,7 +724,7 @@ function writeTerminalOutput(data) {
 
     syncOutputBuffer += text.slice(0, endIdx);
     if (syncOutputBuffer) {
-      term.write(syncOutputBuffer);
+      scheduleTerminalWrite(syncOutputBuffer);
       syncOutputBuffer = '';
     }
     syncOutputActive = false;
@@ -552,10 +735,23 @@ function writeTerminalOutput(data) {
 function flushTerminalOutput() {
   if (!term) return;
 
+  // Cancel any pending rAF and collect its buffered data
+  if (terminalWriteRAF !== null) {
+    cancelAnimationFrame(terminalWriteRAF);
+    terminalWriteRAF = null;
+  }
+
+  let pending = pendingTerminalWrites;
+  pendingTerminalWrites = '';
+
   if (syncOutputActive && (syncOutputRemainder || syncOutputBuffer)) {
-    term.write(syncOutputBuffer + syncOutputRemainder);
+    pending += syncOutputBuffer + syncOutputRemainder;
   } else if (syncOutputRemainder) {
-    term.write(syncOutputRemainder);
+    pending += syncOutputRemainder;
+  }
+
+  if (pending) {
+    term.write(pending);
   }
 
   syncOutputActive = false;
@@ -1217,10 +1413,15 @@ async function loadArtifact(type) {
 
   const viewer = document.getElementById('artifact-viewer');
   const title = document.getElementById('artifact-title');
-  title.textContent = `${type}.md`;
+  const roundLabel = selectedRound !== null ? ` (Round ${selectedRound})` : '';
+  title.textContent = `${type}.md${roundLabel}`;
 
   try {
-    const data = await wfApi(`/artifact/${type}`);
+    // Fetch from round endpoint if viewing an archived round
+    const endpoint = selectedRound !== null
+      ? `/rounds/${selectedRound}/artifact/${type}`
+      : `/artifact/${type}`;
+    const data = await wfApi(endpoint);
     if (data.error) {
       viewer.innerHTML = `<p class="muted centered">${esc(data.error)}</p>`;
       return;
@@ -1231,23 +1432,58 @@ async function loadArtifact(type) {
   }
 }
 
-async function loadChatHistory(phase) {
+async function loadAttemptArtifact(phase, attempt, roundNum) {
+  document.querySelectorAll('.artifact-item').forEach(el => el.classList.remove('active'));
+  const viewer = document.getElementById('artifact-viewer');
+  const title = document.getElementById('artifact-title');
+  title.textContent = `${phase}.attempt-${attempt}.md (Round ${roundNum})`;
+  try {
+    const endpoint = `/rounds/${roundNum}/artifact/${phase}?attempt=${attempt}`;
+    const data = await wfApi(endpoint);
+    if (data.error) {
+      viewer.innerHTML = `<p class="muted centered">${esc(data.error)}</p>`;
+      return;
+    }
+    viewer.innerHTML = marked.parse(data.content);
+  } catch {
+    viewer.innerHTML = '<p class="muted centered">Failed to load attempt artifact</p>';
+  }
+}
+
+async function loadChatHistory(phase, roundNum, attempt) {
   if (sessionActive) return; // Don't interrupt active sessions
   try {
-    const data = await wfApi(`/chat-history/${phase}`);
+    // Use round endpoint if a round number is provided
+    let endpoint;
+    if (roundNum !== undefined && roundNum !== null) {
+      endpoint = `/rounds/${roundNum}/chat-history/${phase}`;
+      if (attempt) endpoint += `?attempt=${attempt}`;
+    } else {
+      endpoint = `/chat-history/${phase}`;
+    }
+    const data = await wfApi(endpoint);
     if (!data.exists) {
-      term.writeln(`\r\n\x1b[33m  No chat history available for ${phase} phase.\x1b[0m\r\n`);
+      const roundLabel = roundNum ? ` (Round ${roundNum})` : '';
+      term.writeln(`\r\n\x1b[33m  No chat history available for ${phase} phase${roundLabel}.\x1b[0m\r\n`);
       return;
     }
     viewingChatHistory = true;
+    const attemptLabel = attempt ? ` attempt ${attempt}` : '';
+    const roundLabel = roundNum ? ` (Round ${roundNum}${attemptLabel})` : '';
     term.clear();
-    term.writeln(`\x1b[2m  Viewing ${phase} phase chat history\x1b[0m`);
+    term.writeln(`\x1b[2m  Viewing ${phase} phase chat history${roundLabel}\x1b[0m`);
     term.writeln(`\x1b[2m  ${'─'.repeat(50)}\x1b[0m\r\n`);
     if (data.large) {
-      // Stream large files
-      const streamPath = state && state.name
-        ? `/api/workflow/${encodeURIComponent(state.name)}/chat-history/${phase}/stream`
-        : `/api/chat-history/${phase}/stream`;
+      // Stream large files — use round-scoped stream endpoint when viewing an archived round
+      let streamPath;
+      if (roundNum !== undefined && roundNum !== null && state && state.name) {
+        streamPath = `/api/workflow/${encodeURIComponent(state.name)}/rounds/${roundNum}/chat-history/${phase}/stream`;
+        if (attempt) streamPath += `?attempt=${attempt}`;
+      } else if (state && state.name) {
+        streamPath = `/api/workflow/${encodeURIComponent(state.name)}/chat-history/${phase}/stream`;
+      } else {
+        streamPath = `/api/chat-history/${phase}/stream`;
+      }
       const res = await fetch(streamPath);
       const text = await res.text();
       term.write(text);
@@ -1255,8 +1491,8 @@ async function loadChatHistory(phase) {
       term.write(data.content);
     }
     term.writeln(`\r\n\r\n\x1b[2m  ${'─'.repeat(50)}\x1b[0m`);
-    term.writeln(`\x1b[2m  End of ${phase} phase chat history\x1b[0m\r\n`);
-    setGuide(`Viewing ${phase} phase chat history. Click Run to start a new session.`);
+    term.writeln(`\x1b[2m  End of ${phase} phase chat history${roundLabel}\x1b[0m\r\n`);
+    setGuide(`Viewing ${phase} phase chat history${roundLabel}. Click Run to start a new session.`);
     // Also show the corresponding artifact
     loadArtifact(phase);
   } catch (err) {
@@ -1643,8 +1879,19 @@ function bindEvents() {
   document.getElementById('run-phase-btn').addEventListener('click', runPhase);
   document.getElementById('advance-btn').addEventListener('click', advancePhase);
   document.getElementById('done-btn').addEventListener('click', markDone);
+  document.getElementById('followup-btn').addEventListener('click', handleFollowup);
+
+  // Round selector — switch between current and archived rounds
+  document.getElementById('round-select').addEventListener('change', (e) => {
+    const val = e.target.value;
+    selectedRound = val ? parseInt(val, 10) : null;
+    renderArtifactList();
+    // Load first available artifact in the selected round
+    if (activeArtifact) loadArtifact(activeArtifact);
+  });
 
   document.getElementById('workflow-select').addEventListener('change', (e) => {
+    selectedRound = null;
     switchWorkflow(e.target.value);
     closeSidebar();
   });
@@ -1657,8 +1904,16 @@ function bindEvents() {
   });
 
   // Clickable completed phases — load chat history replay
+  // When viewing an archived round, load from that round's chat history
   document.querySelectorAll('.phase-item').forEach(el => {
     el.addEventListener('click', () => {
+      if (selectedRound !== null) {
+        // When a round is selected, all phases are clickable for that round
+        const phaseNum = parseInt(el.dataset.phase, 10);
+        const phaseName = PHASE_NAMES[phaseNum];
+        if (phaseName) loadChatHistory(phaseName, selectedRound);
+        return;
+      }
       if (!el.classList.contains('completed')) return;
       const phaseNum = parseInt(el.dataset.phase, 10);
       const phaseName = PHASE_NAMES[phaseNum];

@@ -713,3 +713,25 @@ input.field-invalid, textarea.field-invalid {
   .phase-label { font-size: 12px; }
   .phase-tool { font-size: 9px; }
 }
+
+/* Round selector */
+.round-select {
+  font-size: 11px;
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+.round-select.hidden { display: none; }
+
+/* Followup modal */
+.followup-intro { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
+
+/* Round indicator in phase tracker */
+.round-indicator { font-size: 10px; color: var(--accent); margin-left: 4px; }
+
+/* Attempt artifacts in round view */
+.attempt-section-label { font-size: 11px; color: var(--text-dim); padding: 6px 12px 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+.attempt-item { font-size: 12px; color: var(--text-dim); }

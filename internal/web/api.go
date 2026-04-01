@@ -1087,3 +1087,167 @@ func handleWorkflowReposRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, out)
 }
+
+// ── Followup & Round History ───────────────────────────────────────────────
+
+// POST /api/followup
+func handleFollowup(w http.ResponseWriter, r *http.Request) {
+	body := readBody(r)
+	args := []string{"followup", "--json"}
+	if desc := bodyStr(body, "description"); desc != "" {
+		args = append(args, "--description", desc)
+	}
+	out, err := runCLI(args...)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/followup
+func handleWorkflowFollowup(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	args := []string{"followup", "--workflow", name, "--json"}
+	if desc := bodyStr(body, "description"); desc != "" {
+		args = append(args, "--description", desc)
+	}
+	out, err := runCLI(args...)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// GET /api/workflow/{name}/rounds/{n}/artifact/{type}
+func handleWorkflowRoundArtifact(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	n := r.PathValue("n")
+	if n == "" {
+		writeError(w, 400, "Missing round number")
+		return
+	}
+	artType := r.PathValue("type")
+	if !validArtifacts[artType] {
+		writeError(w, 400, fmt.Sprintf("Invalid artifact type: %s", artType))
+		return
+	}
+
+	wfDir := state.WorkflowDir(name)
+	// Support ?attempt=N for retry-attempt artifacts
+	var filePath string
+	if attemptStr := r.URL.Query().Get("attempt"); attemptStr != "" {
+		filePath = filepath.Join(wfDir, "rounds", n, artType+".attempt-"+attemptStr+".md")
+	} else {
+		filePath = filepath.Join(wfDir, "rounds", n, artType+".md")
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		writeError(w, 404, "Artifact not found")
+		return
+	}
+
+	writeJSONObj(w, map[string]string{
+		"content": string(data),
+		"path":    filePath,
+	})
+}
+
+// GET /api/workflow/{name}/rounds/{n}/chat-history/{phase}
+func handleWorkflowRoundChatHistory(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	n := r.PathValue("n")
+	if n == "" {
+		writeError(w, 400, "Missing round number")
+		return
+	}
+	phase := r.PathValue("phase")
+	if !validPhases[phase] {
+		writeError(w, 400, fmt.Sprintf("Invalid phase: %s", phase))
+		return
+	}
+
+	wfDir := state.WorkflowDir(name)
+	// Support ?attempt=N for retry-attempt chat logs
+	var logPath string
+	if attemptStr := r.URL.Query().Get("attempt"); attemptStr != "" {
+		logPath = filepath.Join(wfDir, "rounds", n, "chat-history", phase+".attempt-"+attemptStr+".log")
+	} else {
+		logPath = filepath.Join(wfDir, "rounds", n, "chat-history", phase+".log")
+	}
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		writeJSONObj(w, map[string]bool{"exists": false})
+		return
+	}
+
+	if info.Size() > 5*1024*1024 {
+		writeJSONObj(w, map[string]any{
+			"exists": true,
+			"path":   logPath,
+			"size":   info.Size(),
+			"large":  true,
+		})
+		return
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+
+	writeJSONObj(w, map[string]any{
+		"exists":  true,
+		"content": string(data),
+		"path":    logPath,
+		"size":    info.Size(),
+	})
+}
+
+// GET /api/workflow/{name}/rounds/{n}/chat-history/{phase}/stream
+func handleWorkflowRoundChatHistoryStream(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	n := r.PathValue("n")
+	if n == "" {
+		writeError(w, 400, "Missing round number")
+		return
+	}
+	phase := r.PathValue("phase")
+	if !validPhases[phase] {
+		writeError(w, 400, fmt.Sprintf("Invalid phase: %s", phase))
+		return
+	}
+
+	wfDir := state.WorkflowDir(name)
+	// Support ?attempt=N for retry-attempt chat logs
+	var logPath string
+	if attemptStr := r.URL.Query().Get("attempt"); attemptStr != "" {
+		logPath = filepath.Join(wfDir, "rounds", n, "chat-history", phase+".attempt-"+attemptStr+".log")
+	} else {
+		logPath = filepath.Join(wfDir, "rounds", n, "chat-history", phase+".log")
+	}
+
+	if _, err := os.Stat(logPath); err != nil {
+		writeError(w, 404, "Chat history not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	http.ServeFile(w, r, logPath)
+}

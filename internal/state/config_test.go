@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +128,48 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 	if got.MaxRetries != 3 {
 		t.Errorf("MaxRetries: got %d, want 3", got.MaxRetries)
+	}
+}
+
+func TestConfigFollowupRoundRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	// FollowupRound > 0 round-trips
+	cfg := &Config{
+		Repo:          "/tmp/repo",
+		Created:       "2026-04-02",
+		Project:       "default",
+		FollowupRound: 2,
+	}
+	if err := WriteConfig(dir, cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	got, err := ReadConfig(dir)
+	if err != nil {
+		t.Fatalf("ReadConfig: %v", err)
+	}
+	if got.FollowupRound != 2 {
+		t.Errorf("FollowupRound: got %d, want 2", got.FollowupRound)
+	}
+
+	// Verify followup_round appears in file
+	data, _ := os.ReadFile(filepath.Join(dir, "config"))
+	if !strings.Contains(string(data), "followup_round=2") {
+		t.Errorf("config file should contain followup_round=2, got:\n%s", data)
+	}
+
+	// FollowupRound == 0 is omitted from file
+	cfg.FollowupRound = 0
+	if err := WriteConfig(dir, cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	data, _ = os.ReadFile(filepath.Join(dir, "config"))
+	if strings.Contains(string(data), "followup_round") {
+		t.Errorf("config file should not contain followup_round when 0, got:\n%s", data)
+	}
+	got, _ = ReadConfig(dir)
+	if got.FollowupRound != 0 {
+		t.Errorf("FollowupRound: got %d, want 0", got.FollowupRound)
 	}
 }
 

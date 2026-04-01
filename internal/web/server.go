@@ -119,6 +119,13 @@ func NewMux(sm *SessionManager) *http.ServeMux {
 	mux.HandleFunc("POST /api/workflow/{name}/repos/add", handleWorkflowReposAdd)
 	mux.HandleFunc("POST /api/workflow/{name}/repos/remove", handleWorkflowReposRemove)
 
+	// Followup & round history
+	mux.HandleFunc("POST /api/followup", handleFollowup)
+	mux.HandleFunc("POST /api/workflow/{name}/followup", handleWorkflowFollowup)
+	mux.HandleFunc("GET /api/workflow/{name}/rounds/{n}/artifact/{type}", handleWorkflowRoundArtifact)
+	mux.HandleFunc("GET /api/workflow/{name}/rounds/{n}/chat-history/{phase}", handleWorkflowRoundChatHistory)
+	mux.HandleFunc("GET /api/workflow/{name}/rounds/{n}/chat-history/{phase}/stream", handleWorkflowRoundChatHistoryStream)
+
 	// ── WebSocket terminal ──────────────────────────────────────────────
 	mux.HandleFunc("/ws/terminal", handleTerminal(sm))
 

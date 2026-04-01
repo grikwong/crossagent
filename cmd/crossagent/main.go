@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -132,6 +133,8 @@ func main() {
 		cmdSupervise(args)
 	case "done":
 		cmdDone(args)
+	case "followup":
+		cmdFollowup(args)
 	case "open":
 		cmdOpen(args)
 	case "memory", "mem":
@@ -557,8 +560,9 @@ func cmdStatus(args []string) {
 				Implement: cli.AgentRefJSON{Name: implementAg.Name, DisplayName: implementAg.DisplayName},
 				Verify:    cli.AgentRefJSON{Name: verifyAg.Name, DisplayName: verifyAg.DisplayName},
 			},
-			RetryCount: retryCount,
-			MaxRetries: maxRetries,
+			RetryCount:    retryCount,
+			MaxRetries:    maxRetries,
+			FollowupRound: cfg.FollowupRound,
 			Artifacts: cli.OrderedArtifacts{
 				Plan:      makeArtifact(filepath.Join(d, "plan.md")),
 				Review:    makeArtifact(filepath.Join(d, "review.md")),
@@ -573,6 +577,40 @@ func cmdStatus(args []string) {
 				Verify:    makeChatHistoryEntry(filepath.Join(d, "chat-history", "verify.log")),
 			},
 		}
+
+		// Build rounds array if followup has occurred
+		if cfg.FollowupRound > 0 {
+			var rounds []cli.RoundJSON
+			for n := 1; n <= cfg.FollowupRound; n++ {
+				rd := filepath.Join(d, "rounds", strconv.Itoa(n))
+				if !fileExists(rd) {
+					continue
+				}
+				r := cli.RoundJSON{
+					Number: n,
+					Artifacts: cli.OrderedArtifacts{
+						Plan:      makeArtifact(filepath.Join(rd, "plan.md")),
+						Review:    makeArtifact(filepath.Join(rd, "review.md")),
+						Implement: makeArtifact(filepath.Join(rd, "implement.md")),
+						Verify:    makeArtifact(filepath.Join(rd, "verify.md")),
+						Memory:    makeArtifact(filepath.Join(rd, "memory.md")),
+					},
+					ChatHistory: cli.OrderedChatHistory{
+						Plan:      makeChatHistoryEntry(filepath.Join(rd, "chat-history", "plan.log")),
+						Review:    makeChatHistoryEntry(filepath.Join(rd, "chat-history", "review.log")),
+						Implement: makeChatHistoryEntry(filepath.Join(rd, "chat-history", "implement.log")),
+						Verify:    makeChatHistoryEntry(filepath.Join(rd, "chat-history", "verify.log")),
+					},
+				}
+				// Scan for attempt artifacts (*.attempt-N.md)
+				r.AttemptArtifacts = scanAttemptArtifacts(rd)
+				// Scan for attempt chat logs (chat-history/*.attempt-N.log)
+				r.AttemptChatHistory = scanAttemptChatHistory(rd)
+				rounds = append(rounds, r)
+			}
+			out.Rounds = rounds
+		}
+
 		if err := cli.PrintStatusJSON(out); err != nil {
 			die(err.Error())
 		}
@@ -792,6 +830,56 @@ func cmdDone(args []string) {
 	success(fmt.Sprintf("Workflow '%s' marked complete.", name))
 }
 
+func cmdFollowup(args []string) {
+	description := ""
+	jsonMode := false
+	workflow := ""
+
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "--json":
+			jsonMode = true
+			i++
+		case "--description":
+			requireArg(args, i)
+			description = args[i+1]
+			i += 2
+		case "--workflow":
+			requireArg(args, i)
+			workflow = args[i+1]
+			i += 2
+		case "-h", "--help":
+			fmt.Println("Usage: crossagent followup [--description <text>] [--workflow <name>] [--json]")
+			os.Exit(0)
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				die(fmt.Sprintf("Unknown option: %s", args[i]))
+			}
+			i++
+		}
+	}
+
+	name, d := resolveWorkflow(workflow, jsonMode)
+	roundNum, err := state.FollowupWorkflow(d, description)
+	if err != nil {
+		die(err.Error())
+	}
+
+	if jsonMode {
+		out := cli.FollowupJSON{
+			Action:          "followed_up",
+			Round:           roundNum,
+			WorkflowName:    name,
+			FollowupContext: filepath.Join(d, "prompts", "followup-context.md"),
+		}
+		cli.PrintJSON(out)
+	} else {
+		success(fmt.Sprintf("Follow-up round %d started for workflow '%s'.", roundNum, name))
+		info(fmt.Sprintf("Followup context: %s", filepath.Join(d, "prompts", "followup-context.md")))
+	}
+}
+
 func cmdServe(args []string) {
 	port := "3456"
 	openBrowser := false
@@ -859,20 +947,37 @@ func cmdOpen(args []string) {
 
 func cmdLog(args []string) {
 	chatMode := hasFlag(args, "--chat")
+	roundStr := flagStr(args, "--round")
 
 	name, d, err := cli.RequireWorkflow()
 	if err != nil {
 		die(err.Error())
 	}
 
+	// Resolve base directory (root or rounds/N/)
+	baseDir := d
+	roundLabel := ""
+	if roundStr != "" {
+		roundNum, err := strconv.Atoi(roundStr)
+		if err != nil || roundNum < 1 {
+			die("--round must be a positive integer")
+		}
+		roundDir := filepath.Join(d, "rounds", roundStr)
+		if !fileExists(roundDir) {
+			die(fmt.Sprintf("Round %d not found (no directory: %s)", roundNum, roundDir))
+		}
+		baseDir = roundDir
+		roundLabel = fmt.Sprintf(" (Round %d)", roundNum)
+	}
+
 	if chatMode {
 		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "  %sChat History: %s%s\n", BOLD, name, NC)
+		fmt.Fprintf(os.Stderr, "  %sChat History: %s%s%s\n", BOLD, name, roundLabel, NC)
 		separator()
 
 		found := false
 		for _, phase := range []string{"plan", "review", "implement", "verify"} {
-			logPath := filepath.Join(d, "chat-history", phase+".log")
+			logPath := filepath.Join(baseDir, "chat-history", phase+".log")
 			if fileExists(logPath) {
 				found = true
 				fmt.Fprintln(os.Stderr)
@@ -885,6 +990,21 @@ func cmdLog(args []string) {
 				fmt.Fprintln(os.Stdout)
 				separator()
 			}
+			// Also display attempt chat logs when viewing a round
+			if roundStr != "" {
+				attemptLogs := scanAttemptChatHistoryForPhase(baseDir, phase)
+				for _, al := range attemptLogs {
+					found = true
+					fmt.Fprintln(os.Stderr)
+					fmt.Fprintf(os.Stderr, "  %s%s.attempt-%d.log%s\n", BOLD, phase, al.Attempt, NC)
+					fmt.Fprintf(os.Stderr, "  %s%s%s\n", DIM, al.Path, NC)
+					fmt.Fprintln(os.Stderr)
+					data, _ := os.ReadFile(al.Path)
+					os.Stdout.Write(data)
+					fmt.Fprintln(os.Stdout)
+					separator()
+				}
+			}
 		}
 
 		if !found {
@@ -895,20 +1015,37 @@ func cmdLog(args []string) {
 	}
 
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "  %sArtifacts: %s%s\n", BOLD, name, NC)
+	fmt.Fprintf(os.Stderr, "  %sArtifacts: %s%s%s\n", BOLD, name, roundLabel, NC)
 	separator()
 
 	found := false
 	// Bash prints plan.md, review.md, verify.md (not implement.md)
 	for _, artifact := range []string{"plan.md", "review.md", "verify.md"} {
-		path := filepath.Join(d, artifact)
+		path := filepath.Join(baseDir, artifact)
 		if fileExists(path) {
 			found = true
 			fmt.Fprintln(os.Stderr)
-			fmt.Fprintf(os.Stderr, "  %s%s%s\n", BOLD, artifact, NC)
+			fmt.Fprintf(os.Stderr, "  %s%s\n", BOLD, artifact)
 			fmt.Fprintf(os.Stderr, "  %s%s%s\n", DIM, path, NC)
 			fmt.Fprintln(os.Stderr)
 			data, _ := os.ReadFile(path)
+			for _, line := range strings.Split(string(data), "\n") {
+				fmt.Fprintf(os.Stderr, "    %s\n", line)
+			}
+			fmt.Fprintln(os.Stderr)
+			separator()
+		}
+	}
+	// Also display attempt artifacts when viewing a round
+	if roundStr != "" {
+		attemptArts := scanAttemptArtifacts(baseDir)
+		for _, aa := range attemptArts {
+			found = true
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintf(os.Stderr, "  %s%s.attempt-%d.md%s\n", BOLD, aa.Phase, aa.Attempt, NC)
+			fmt.Fprintf(os.Stderr, "  %s%s%s\n", DIM, aa.Path, NC)
+			fmt.Fprintln(os.Stderr)
+			data, _ := os.ReadFile(aa.Path)
 			for _, line := range strings.Split(string(data), "\n") {
 				fmt.Fprintf(os.Stderr, "    %s\n", line)
 			}
@@ -921,6 +1058,111 @@ func cmdLog(args []string) {
 		fmt.Fprintf(os.Stderr, "  %sNo artifacts yet.%s\n", DIM, NC)
 	}
 	fmt.Fprintln(os.Stderr)
+}
+
+// ── Attempt Scanning Helpers ────────────────────────────────────────────────
+
+var attemptArtifactRe = regexp.MustCompile(`^(plan|review|implement|verify)\.attempt-(\d+)\.md$`)
+var attemptChatLogRe = regexp.MustCompile(`^(plan|review|implement|verify)\.attempt-(\d+)\.log$`)
+
+// scanAttemptArtifacts scans a round directory for *.attempt-N.md files.
+func scanAttemptArtifacts(roundDir string) []cli.AttemptFileJSON {
+	entries, err := os.ReadDir(roundDir)
+	if err != nil {
+		return nil
+	}
+	var results []cli.AttemptFileJSON
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := attemptArtifactRe.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		phase := m[1]
+		attempt, _ := strconv.Atoi(m[2])
+		p := filepath.Join(roundDir, e.Name())
+		a := cli.AttemptFileJSON{
+			Phase:   phase,
+			Attempt: attempt,
+			Exists:  true,
+			Path:    p,
+			Lines:   countLines(p),
+		}
+		results = append(results, a)
+	}
+	return results
+}
+
+// scanAttemptChatHistory scans a round's chat-history directory for *.attempt-N.log files.
+func scanAttemptChatHistory(roundDir string) []cli.AttemptFileJSON {
+	chatDir := filepath.Join(roundDir, "chat-history")
+	entries, err := os.ReadDir(chatDir)
+	if err != nil {
+		return nil
+	}
+	var results []cli.AttemptFileJSON
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := attemptChatLogRe.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		phase := m[1]
+		attempt, _ := strconv.Atoi(m[2])
+		p := filepath.Join(chatDir, e.Name())
+		info, err := os.Stat(p)
+		size := int64(0)
+		if err == nil {
+			size = info.Size()
+		}
+		a := cli.AttemptFileJSON{
+			Phase:   phase,
+			Attempt: attempt,
+			Exists:  true,
+			Path:    p,
+			Size:    size,
+		}
+		results = append(results, a)
+	}
+	return results
+}
+
+// scanAttemptChatHistoryForPhase returns attempt chat logs for a specific phase within a round dir.
+func scanAttemptChatHistoryForPhase(roundDir, phase string) []cli.AttemptFileJSON {
+	chatDir := filepath.Join(roundDir, "chat-history")
+	entries, err := os.ReadDir(chatDir)
+	if err != nil {
+		return nil
+	}
+	var results []cli.AttemptFileJSON
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := attemptChatLogRe.FindStringSubmatch(e.Name())
+		if m == nil || m[1] != phase {
+			continue
+		}
+		attempt, _ := strconv.Atoi(m[2])
+		p := filepath.Join(chatDir, e.Name())
+		info, err := os.Stat(p)
+		size := int64(0)
+		if err == nil {
+			size = info.Size()
+		}
+		results = append(results, cli.AttemptFileJSON{
+			Phase:   phase,
+			Attempt: attempt,
+			Exists:  true,
+			Path:    p,
+			Size:    size,
+		})
+	}
+	return results
 }
 
 // ── Agents Subcommands ──────────────────────────────────────────────────────
@@ -2595,6 +2837,10 @@ func usage() {
     use <name>            Switch active workflow
     advance               Manually advance to next phase
     done                  Mark workflow as complete
+    followup [opts]       Start a new round on a completed workflow
+      --description <text>  New description (optional, keeps current)
+      --workflow <name>     Target workflow (default: active)
+      --json                JSON output
 
   PROJECTS
     projects list         List all projects
@@ -2647,7 +2893,9 @@ func usage() {
       --open                Open browser automatically
 
   UTILITIES
-    log                   Display all artifacts (plan, review, report)
+    log [--round N]       Display all artifacts (plan, review, report)
+      --chat                Show chat history instead of artifacts
+      --round <N>           Show artifacts from archived round N
     open                  Open workflow directory in Finder
     reset <name>          Delete a workflow and its artifacts
     help                  Show this help

@@ -37,15 +37,18 @@ type GeneralData struct {
 
 // PlanData holds data for plan.md.tmpl.
 type PlanData struct {
-	GeneralPath             string
-	Description             string
-	DescPath                string
-	PlanPath                string
-	WfDir                   string
-	RetryMode               bool
-	AttemptNum              int
-	RevertContext           string
-	MemoryContext           string
+	GeneralPath              string
+	Description              string
+	DescPath                 string
+	PlanPath                 string
+	WfDir                    string
+	RetryMode                bool
+	AttemptNum               int
+	RevertContext            string
+	FollowupMode             bool
+	FollowupRound            int
+	FollowupContext          string
+	MemoryContext            string
 	MemoryUpdateInstructions string
 }
 

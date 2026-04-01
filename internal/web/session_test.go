@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -95,19 +96,35 @@ func startEchoSession(t *testing.T, sm *SessionManager, wfDir string) *Session {
 
 	s := sm.Create("test-wf", "plan", cmd, ptmx, wfDir)
 
-	// Start the reader goroutine (mirrors handleSpawn's goroutine)
+	// Start the reader goroutine (mirrors handleSpawn's goroutine with UTF-8 safety)
 	go func() {
 		defer close(s.Done)
 
 		buf := make([]byte, 32*1024)
+		var remainder []byte
 		for {
 			n, readErr := ptmx.Read(buf)
 			if n > 0 {
-				data := string(buf[:n])
-				s.OutputBuf.Write(buf[:n])
-				s.appendChat(data)
+				var chunk []byte
+				if len(remainder) > 0 {
+					chunk = append(remainder, buf[:n]...)
+					remainder = nil
+				} else {
+					chunk = make([]byte, n)
+					copy(chunk, buf[:n])
+				}
+				valid, rem := splitUTF8(chunk)
+				remainder = rem
+				if len(valid) > 0 {
+					s.OutputBuf.Write(valid)
+					s.appendChat(string(valid))
+				}
 			}
 			if readErr != nil {
+				if len(remainder) > 0 {
+					s.OutputBuf.Write(remainder)
+					s.appendChat(string(remainder))
+				}
 				break
 			}
 		}
@@ -435,5 +452,99 @@ func TestAttachReplayBeforeLiveOutput(t *testing.T) {
 	}
 	if outputIdx != -1 && outputIdx < replayIdx {
 		t.Fatalf("received 'output' before 'replay'; message order: %v", messages)
+	}
+}
+
+// TestRingBufferUTF8Boundary verifies that Bytes() returns valid UTF-8 even
+// when the circular buffer wraps in the middle of a multi-byte codepoint.
+func TestRingBufferUTF8Boundary(t *testing.T) {
+	// Use a small buffer so we can force a wrap easily.
+	// "✓" is U+2713, encoded as 3 bytes: 0xE2 0x9C 0x93
+	checkmark := "✓"
+	if len(checkmark) != 3 {
+		t.Fatalf("expected 3-byte checkmark, got %d", len(checkmark))
+	}
+
+	// Buffer of size 5. Write "ABC✓" (6 bytes) to force wrap.
+	rb := newRingBuffer(5)
+	rb.Write([]byte("ABC" + checkmark)) // 6 bytes wraps around a 5-byte buffer
+
+	got := rb.Bytes()
+	if !utf8.Valid(got) {
+		t.Fatalf("Bytes() returned invalid UTF-8: %q (hex: %x)", got, got)
+	}
+
+	// The first byte(s) of the checkmark should be skipped since they're orphaned
+	// continuation bytes from the circular split. The result should end with
+	// the complete checkmark's last byte(s) or skip the broken codepoint entirely.
+	// With buffer size 5, "ABC✓" = [0x41,0x42,0x43,0xE2,0x9C,0x93]
+	// After wrap: buf = [0x93,0x42,0x43,0xE2,0x9C], pos=1, full=true
+	// Bytes raw = buf[1:] + buf[:1] = [0x42,0x43,0xE2,0x9C,0x93] = "BC✓"
+	// "BC✓" is valid UTF-8 so no bytes should be skipped.
+	if string(got) != "BC"+checkmark {
+		t.Fatalf("expected %q, got %q", "BC"+checkmark, string(got))
+	}
+
+	// Now test a case where the split actually orphans continuation bytes.
+	// Buffer of size 4: write "AB✓" (5 bytes) to force wrap mid-codepoint.
+	rb2 := newRingBuffer(4)
+	rb2.Write([]byte("AB" + checkmark)) // 5 bytes wraps around 4-byte buffer
+	// buf = [0x93,0x42,0xE2,0x9C], pos=1, full=true
+	// Bytes raw = buf[1:] + buf[:1] = [0x42,0xE2,0x9C,0x93] = "B✓"
+	// This is actually valid UTF-8!
+	got2 := rb2.Bytes()
+	if !utf8.Valid(got2) {
+		t.Fatalf("Bytes() returned invalid UTF-8: %q (hex: %x)", got2, got2)
+	}
+
+	// Force orphaned bytes: buffer of size 3, write "A✓" (4 bytes).
+	// buf = [0x93,0x41,0xE2], pos=1, full=true
+	// Bytes raw = buf[1:] + buf[:1] = [0x41,0xE2,0x93] = "A" + 0xE2 + 0x93
+	// 0xE2 starts a 3-byte sequence but 0x93 is a continuation byte —
+	// DecodeRune("A...") returns 'A' (valid), then DecodeRune([0xE2,0x93])
+	// returns RuneError. But our skip logic only skips leading invalid bytes.
+	// Let's use a buffer of 2 to get a clear orphan case.
+	rb3 := newRingBuffer(2)
+	rb3.Write([]byte(checkmark)) // 3 bytes into 2-byte buffer
+	// buf = [0x93,0xE2], pos=1 (wraps: 0xE2@0, 0x9C@1(wrap,full), 0x93@0, pos=1)
+	// Wait, let me retrace: Write byte-by-byte: 0xE2→pos0, 0x9C→pos1(wrap,full=true), 0x93→pos0, pos=1
+	// buf = [0x93, 0x9C], pos=1, full=true
+	// Bytes raw = buf[1:] + buf[:1] = [0x9C, 0x93]
+	// Both are continuation bytes (0x80-0xBF) — should be skipped entirely.
+	got3 := rb3.Bytes()
+	if !utf8.Valid(got3) {
+		t.Fatalf("Bytes() returned invalid UTF-8: %q (hex: %x)", got3, got3)
+	}
+	if len(got3) != 0 {
+		t.Fatalf("expected empty result after skipping orphaned bytes, got %q (hex: %x)", got3, got3)
+	}
+}
+
+// TestSplitUTF8 verifies the splitUTF8 helper correctly separates valid UTF-8
+// from trailing incomplete multi-byte sequences.
+func TestSplitUTF8(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     []byte
+		wantValid string
+		wantRem   int // expected remainder length
+	}{
+		{"ascii only", []byte("hello"), "hello", 0},
+		{"complete multibyte", []byte("hello✓"), "hello✓", 0},
+		{"trailing 1 of 3", []byte{'h', 'i', 0xE2}, "hi", 1},
+		{"trailing 2 of 3", []byte{'h', 'i', 0xE2, 0x9C}, "hi", 2},
+		{"empty", []byte{}, "", 0},
+		{"only incomplete", []byte{0xE2, 0x9C}, "", 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			valid, rem := splitUTF8(tt.input)
+			if string(valid) != tt.wantValid {
+				t.Errorf("valid = %q, want %q", valid, tt.wantValid)
+			}
+			if len(rem) != tt.wantRem {
+				t.Errorf("remainder len = %d, want %d (rem = %x)", len(rem), tt.wantRem, rem)
+			}
+		})
 	}
 }

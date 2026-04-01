@@ -80,6 +80,25 @@ targeted updates to address the issues below.
 
 {{.RevertContext}}
 {{- end}}
+{{- if .FollowupMode}}
+
+---
+
+# FOLLOWUP MODE — Building on Previous Work (Round {{.FollowupRound}})
+
+**This is a followup on a completed workflow.** The previous round's
+artifacts have been archived under `rounds/{{.FollowupRound}}/`.
+Review the context below to understand what was already accomplished,
+then create a NEW plan that builds on or extends that work.
+
+## What to do:
+1. Read the previous round context below
+2. Understand what was accomplished and any issues found
+3. Create a fresh plan that addresses the followup task
+4. Reference previous artifacts in `rounds/` if needed for detail
+
+{{.FollowupContext}}
+{{- end}}
 {{- if .MemoryContext}}
 
 ---

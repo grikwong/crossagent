@@ -400,6 +400,193 @@ func CreateWorkflow(name, repo, project, description string, addDirs []string) e
 	return nil
 }
 
+// FollowupWorkflow archives completed artifacts into rounds/N/ and resets
+// the workflow to phase 1 for a new round of work. Returns the new round number.
+func FollowupWorkflow(wfDir, newDescription string) (int, error) {
+	phase, err := GetPhase(wfDir)
+	if err != nil {
+		return 0, err
+	}
+	if phase != "done" {
+		return 0, fmt.Errorf("workflow must be completed (phase=done) to follow up, current phase: %s", phase)
+	}
+
+	cfg, err := ReadConfig(wfDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	roundNum := cfg.FollowupRound + 1
+	roundDir := filepath.Join(wfDir, "rounds", fmt.Sprintf("%d", roundNum))
+
+	if _, err := os.Stat(roundDir); err == nil {
+		return 0, fmt.Errorf("round directory already exists: %s", roundDir)
+	}
+
+	if err := os.MkdirAll(roundDir, 0755); err != nil {
+		return 0, fmt.Errorf("failed to create round directory: %w", err)
+	}
+
+	// Move phase artifacts
+	for _, name := range []string{"plan.md", "review.md", "implement.md", "verify.md"} {
+		src := filepath.Join(wfDir, name)
+		if fileExists(src) {
+			if err := os.Rename(src, filepath.Join(roundDir, name)); err != nil {
+				return 0, fmt.Errorf("failed to archive %s: %w", name, err)
+			}
+		}
+	}
+
+	// Move attempt archives (*.attempt-*.md)
+	entries, err := os.ReadDir(wfDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read workflow directory: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.Contains(e.Name(), ".attempt-") && strings.HasSuffix(e.Name(), ".md") {
+			src := filepath.Join(wfDir, e.Name())
+			if err := os.Rename(src, filepath.Join(roundDir, e.Name())); err != nil {
+				return 0, fmt.Errorf("failed to archive %s: %w", e.Name(), err)
+			}
+		}
+	}
+
+	// Move chat-history contents
+	chatDir := filepath.Join(wfDir, "chat-history")
+	if info, err := os.Stat(chatDir); err == nil && info.IsDir() {
+		roundChatDir := filepath.Join(roundDir, "chat-history")
+		if err := os.MkdirAll(roundChatDir, 0755); err != nil {
+			return 0, fmt.Errorf("failed to create round chat-history dir: %w", err)
+		}
+		chatEntries, err := os.ReadDir(chatDir)
+		if err != nil {
+			return 0, fmt.Errorf("failed to read chat-history: %w", err)
+		}
+		for _, e := range chatEntries {
+			if !e.IsDir() {
+				src := filepath.Join(chatDir, e.Name())
+				if err := os.Rename(src, filepath.Join(roundChatDir, e.Name())); err != nil {
+					return 0, fmt.Errorf("failed to archive chat %s: %w", e.Name(), err)
+				}
+			}
+		}
+	}
+
+	// Move prompts contents (except .sandbox-settings.json)
+	promptsDir := filepath.Join(wfDir, "prompts")
+	if info, err := os.Stat(promptsDir); err == nil && info.IsDir() {
+		roundPromptsDir := filepath.Join(roundDir, "prompts")
+		if err := os.MkdirAll(roundPromptsDir, 0755); err != nil {
+			return 0, fmt.Errorf("failed to create round prompts dir: %w", err)
+		}
+		promptEntries, err := os.ReadDir(promptsDir)
+		if err != nil {
+			return 0, fmt.Errorf("failed to read prompts dir: %w", err)
+		}
+		for _, e := range promptEntries {
+			if !e.IsDir() && e.Name() != ".sandbox-settings.json" {
+				src := filepath.Join(promptsDir, e.Name())
+				if err := os.Rename(src, filepath.Join(roundPromptsDir, e.Name())); err != nil {
+					return 0, fmt.Errorf("failed to archive prompt %s: %w", e.Name(), err)
+				}
+			}
+		}
+	}
+
+	// Generate followup context from archived artifacts using priority fallback:
+	// verify → review → implement → plan (addresses review issue #2)
+	followupContext := generateFollowupContext(roundDir, roundNum)
+	followupContextPath := filepath.Join(promptsDir, "followup-context.md")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		return 0, fmt.Errorf("failed to ensure prompts dir: %w", err)
+	}
+	if err := atomicWrite(followupContextPath, []byte(followupContext)); err != nil {
+		return 0, fmt.Errorf("failed to write followup context: %w", err)
+	}
+
+	// Reset phase to 1
+	if err := SetPhase(wfDir, "1"); err != nil {
+		return 0, fmt.Errorf("failed to reset phase: %w", err)
+	}
+
+	// Update config
+	cfg.FollowupRound = roundNum
+	cfg.RetryCount = 0
+	if err := WriteConfig(wfDir, cfg); err != nil {
+		return 0, fmt.Errorf("failed to update config: %w", err)
+	}
+
+	// Update description if provided
+	if newDescription != "" {
+		descPath := filepath.Join(wfDir, "description")
+		if err := atomicWrite(descPath, []byte(newDescription+"\n")); err != nil {
+			return 0, fmt.Errorf("failed to update description: %w", err)
+		}
+	}
+
+	// Append followup session note to memory.md
+	memPath := filepath.Join(wfDir, "memory.md")
+	if fileExists(memPath) {
+		note := fmt.Sprintf("\n### %s\n- Follow-up round %d started\n", dateNow(), roundNum)
+		f, err := os.OpenFile(memPath, os.O_APPEND|os.O_WRONLY, 0644)
+		if err == nil {
+			f.WriteString(note)
+			f.Close()
+		}
+	}
+
+	return roundNum, nil
+}
+
+// generateFollowupContext builds the followup context from archived artifacts.
+// Uses priority-ordered fallback: verify → review → implement → plan.
+func generateFollowupContext(roundDir string, roundNum int) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Previous Round %d Context\n\n", roundNum))
+
+	type artifactEntry struct {
+		file  string
+		label string
+	}
+	// Priority order: verify, review, implement, plan
+	artifacts := []artifactEntry{
+		{"verify.md", "Verification Report"},
+		{"review.md", "Review Feedback"},
+		{"implement.md", "Implementation Summary"},
+		{"plan.md", "Implementation Plan"},
+	}
+
+	found := 0
+	for _, a := range artifacts {
+		path := filepath.Join(roundDir, a.file)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		// Truncate large artifacts to 5000 chars
+		if len(content) > 5000 {
+			content = content[:5000] + "\n\n... (truncated)\n"
+		}
+		sb.WriteString(fmt.Sprintf("## %s (%s)\n\n", a.label, a.file))
+		sb.WriteString(content)
+		sb.WriteString("\n\n")
+		found++
+	}
+
+	if found == 0 {
+		sb.WriteString("No artifacts found from the previous round.\n")
+	}
+
+	return sb.String()
+}
+
+// fileExists returns true if the path exists and is a regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 // timeNow returns the current date as YYYY-MM-DD HH:MM.
 // Extracted as a variable for testing.
 var timeNow = func() string {

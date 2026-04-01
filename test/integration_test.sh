@@ -348,6 +348,94 @@ assert_json "done marks workflow complete" \
   "assert d['phase']=='done'" \
   "$BINARY" status --json
 
+# ── 9b. Followup ─────────────────────────────────────────────────────────────
+
+echo ""
+echo "  Section 9b: Followup"
+
+# revert-wf is already at phase=done from section 9
+# Create artifacts to archive
+WF_DIR="$CROSSAGENT_HOME/workflows/revert-wf"
+echo "# Test Plan" > "$WF_DIR/plan.md"
+echo "# Test Review" > "$WF_DIR/review.md"
+mkdir -p "$WF_DIR/chat-history"
+echo "terminal output" > "$WF_DIR/chat-history/plan.log"
+
+assert_json "followup on done workflow succeeds" \
+  "assert d['action']=='followed_up' and d['round']==1" \
+  "$BINARY" followup --json
+
+assert_json "phase reset to 1 after followup" \
+  "assert d['phase']=='1'" \
+  "$BINARY" status --json
+
+assert_json "followup_round is 1 in status" \
+  "assert d.get('followup_round',0)==1" \
+  "$BINARY" status --json
+
+assert "rounds/1 directory exists" test -d "$WF_DIR/rounds/1"
+assert "plan.md archived to rounds/1" test -f "$WF_DIR/rounds/1/plan.md"
+assert "chat-history archived to rounds/1" test -f "$WF_DIR/rounds/1/chat-history/plan.log"
+
+assert_json "status --json includes rounds array" \
+  "assert len(d.get('rounds',[]))>=1 and d['rounds'][0]['number']==1" \
+  "$BINARY" status --json
+
+# Test followup on non-done workflow fails
+total=$((total + 1))
+if "$BINARY" followup --json >/dev/null 2>&1; then
+  fail=$((fail + 1))
+  printf "  ✗ followup on non-done workflow fails\n" >&2
+else
+  pass=$((pass + 1))
+  printf "  ✓ followup on non-done workflow fails\n"
+fi
+
+# Mark done and do second followup
+echo "# Plan 2" > "$WF_DIR/plan.md"
+"$BINARY" done 2>/dev/null
+assert_json "second followup succeeds" \
+  "assert d['action']=='followed_up' and d['round']==2" \
+  "$BINARY" followup --description "New task" --json
+
+assert "rounds/2 directory exists" test -d "$WF_DIR/rounds/2"
+
+assert_json "followup_round is 2" \
+  "assert d.get('followup_round',0)==2" \
+  "$BINARY" status --json
+
+# Test log --round
+"$BINARY" log --round 1 2>/dev/null
+assert "log --round 1 succeeds" test $? -eq 0
+
+# Test attempt discoverability after followup
+# Create a workflow with retry attempts, then followup, and verify attempts are discoverable
+WF2="attempt-test-wf"
+echo "Test attempt workflow" | "$BINARY" new "$WF2" --repo /tmp 2>/dev/null
+WF2_DIR="$CROSSAGENT_HOME/workflows/$WF2"
+echo "# Plan" > "$WF2_DIR/plan.md"
+echo "# Review" > "$WF2_DIR/review.md"
+echo "# Review Attempt 1" > "$WF2_DIR/review.attempt-1.md"
+echo "# Implement" > "$WF2_DIR/implement.md"
+echo "# Verify" > "$WF2_DIR/verify.md"
+mkdir -p "$WF2_DIR/chat-history"
+echo "plan log" > "$WF2_DIR/chat-history/plan.log"
+echo "review log" > "$WF2_DIR/chat-history/review.log"
+echo "review attempt 1 log" > "$WF2_DIR/chat-history/review.attempt-1.log"
+echo "done" > "$WF2_DIR/phase"
+"$BINARY" followup --workflow "$WF2" --json >/dev/null 2>&1
+
+assert "attempt artifact archived to rounds/1" test -f "$WF2_DIR/rounds/1/review.attempt-1.md"
+assert "attempt chat log archived to rounds/1" test -f "$WF2_DIR/rounds/1/chat-history/review.attempt-1.log"
+
+assert_json "status --json rounds include attempt_artifacts" \
+  "assert any(a['phase']=='review' and a['attempt']==1 for a in d['rounds'][0].get('attempt_artifacts',[]))" \
+  "$BINARY" status --workflow "$WF2" --json
+
+assert_json "status --json rounds include attempt_chat_history" \
+  "assert any(a['phase']=='review' and a['attempt']==1 for a in d['rounds'][0].get('attempt_chat_history',[]))" \
+  "$BINARY" status --workflow "$WF2" --json
+
 # ── 10. Multiple workflows ────────────────────────────────────────────────────
 
 echo ""

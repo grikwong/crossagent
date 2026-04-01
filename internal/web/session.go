@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
@@ -41,6 +42,9 @@ func (rb *ringBuffer) Write(p []byte) {
 }
 
 // Bytes returns a copy of the buffered content in order.
+// When the buffer has wrapped, leading bytes that form an incomplete UTF-8
+// codepoint (split by the circular boundary) are skipped so that replay
+// output always starts on a valid character boundary.
 func (rb *ringBuffer) Bytes() []byte {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -52,6 +56,15 @@ func (rb *ringBuffer) Bytes() []byte {
 	out := make([]byte, rb.size)
 	n := copy(out, rb.buf[rb.pos:])
 	copy(out[n:], rb.buf[:rb.pos])
+	// Skip orphaned UTF-8 continuation bytes at the start caused by
+	// the circular boundary splitting a multi-byte codepoint.
+	for len(out) > 0 {
+		r, size := utf8.DecodeRune(out)
+		if r != utf8.RuneError || size != 1 {
+			break // valid rune (or empty) — stop skipping
+		}
+		out = out[1:]
+	}
 	return out
 }
 

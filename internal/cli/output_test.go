@@ -854,3 +854,211 @@ func TestMarshalCompact(t *testing.T) {
 		t.Errorf("MarshalCompact should be single-line, got: %s", out)
 	}
 }
+
+func TestRoundJSON_AttemptFields(t *testing.T) {
+	r := RoundJSON{
+		Number: 1,
+		Artifacts: OrderedArtifacts{
+			Plan: ArtifactJSON{Exists: true, Path: "/tmp/rounds/1/plan.md", Lines: 10},
+		},
+		AttemptArtifacts: []AttemptFileJSON{
+			{Phase: "review", Attempt: 1, Exists: true, Path: "/tmp/rounds/1/review.attempt-1.md", Lines: 5},
+		},
+		AttemptChatHistory: []AttemptFileJSON{
+			{Phase: "review", Attempt: 1, Exists: true, Path: "/tmp/rounds/1/chat-history/review.attempt-1.log", Size: 1024},
+		},
+	}
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	if !strings.Contains(out, `"attempt_artifacts"`) {
+		t.Error("RoundJSON with attempts should contain attempt_artifacts key")
+	}
+	if !strings.Contains(out, `"attempt_chat_history"`) {
+		t.Error("RoundJSON with attempts should contain attempt_chat_history key")
+	}
+	if !strings.Contains(out, `review.attempt-1.md`) {
+		t.Error("attempt artifact path should be present")
+	}
+}
+
+func TestRoundJSON_NoAttemptFieldsWhenEmpty(t *testing.T) {
+	r := RoundJSON{
+		Number: 1,
+		Artifacts: OrderedArtifacts{
+			Plan: ArtifactJSON{Exists: true, Path: "/tmp/rounds/1/plan.md", Lines: 10},
+		},
+	}
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	if strings.Contains(out, `"attempt_artifacts"`) {
+		t.Error("RoundJSON without attempts should omit attempt_artifacts")
+	}
+	if strings.Contains(out, `"attempt_chat_history"`) {
+		t.Error("RoundJSON without attempts should omit attempt_chat_history")
+	}
+}
+
+func TestStatusJSON_FollowupRoundAndRounds(t *testing.T) {
+	s := StatusJSON{
+		Name:          "test-wf",
+		AddDirs:       []string{},
+		Repos:         ReposJSON{Additional: []string{}},
+		FollowupRound: 1,
+		Rounds: []RoundJSON{
+			{
+				Number: 1,
+				Artifacts: OrderedArtifacts{
+					Plan: ArtifactJSON{Exists: true, Path: "/tmp/rounds/1/plan.md", Lines: 10},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	if !strings.Contains(out, `"followup_round"`) {
+		t.Error("StatusJSON with FollowupRound > 0 should contain followup_round key")
+	}
+	if !strings.Contains(out, `"rounds"`) {
+		t.Error("StatusJSON with Rounds should contain rounds key")
+	}
+}
+
+func TestStatusJSON_NoFollowupWhenZero(t *testing.T) {
+	s := StatusJSON{
+		Name:    "test-wf",
+		AddDirs: []string{},
+		Repos:   ReposJSON{Additional: []string{}},
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	if strings.Contains(out, `"followup_round"`) {
+		t.Error("StatusJSON with FollowupRound=0 should omit followup_round")
+	}
+	if strings.Contains(out, `"rounds"`) {
+		t.Error("StatusJSON with empty Rounds should omit rounds")
+	}
+}
+
+func TestPrintStatusJSON_RoundsWithAttempts(t *testing.T) {
+	s := StatusJSON{
+		Name:          "test-wf",
+		AddDirs:       []string{},
+		Repos:         ReposJSON{Additional: []string{}},
+		FollowupRound: 1,
+		Rounds: []RoundJSON{
+			{
+				Number: 1,
+				Artifacts: OrderedArtifacts{
+					Plan: ArtifactJSON{Exists: true, Path: "/tmp/r/1/plan.md", Lines: 5},
+				},
+				AttemptArtifacts: []AttemptFileJSON{
+					{Phase: "review", Attempt: 1, Exists: true, Path: "/tmp/r/1/review.attempt-1.md", Lines: 3},
+				},
+				AttemptChatHistory: []AttemptFileJSON{
+					{Phase: "review", Attempt: 1, Exists: true, Path: "/tmp/r/1/chat-history/review.attempt-1.log", Size: 512},
+				},
+			},
+		},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := PrintStatusJSON(s)
+
+	w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	// Should be valid JSON
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("PrintStatusJSON with attempts is not valid JSON: %v\nOutput: %s", err, out)
+	}
+
+	if !strings.Contains(out, `"attempt_artifacts"`) {
+		t.Error("PrintStatusJSON should include attempt_artifacts in rounds")
+	}
+	if !strings.Contains(out, `"attempt_chat_history"`) {
+		t.Error("PrintStatusJSON should include attempt_chat_history in rounds")
+	}
+}
+
+func TestPrintStatusJSON_FollowupRound(t *testing.T) {
+	s := StatusJSON{
+		Name:          "test-wf",
+		AddDirs:       []string{},
+		Repos:         ReposJSON{Additional: []string{}},
+		FollowupRound: 2,
+		Rounds: []RoundJSON{
+			{
+				Number: 1,
+				Artifacts: OrderedArtifacts{
+					Plan: ArtifactJSON{Exists: true, Path: "/tmp/r/1/plan.md", Lines: 5},
+				},
+			},
+			{
+				Number: 2,
+				Artifacts: OrderedArtifacts{
+					Plan: ArtifactJSON{Exists: true, Path: "/tmp/r/2/plan.md", Lines: 8},
+				},
+			},
+		},
+	}
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := PrintStatusJSON(s)
+
+	w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	if !strings.Contains(out, `"followup_round": 2`) {
+		t.Error("PrintStatusJSON should include followup_round")
+	}
+	if !strings.Contains(out, `"rounds"`) {
+		t.Error("PrintStatusJSON should include rounds array")
+	}
+	if !strings.Contains(out, `"number": 1`) {
+		t.Error("PrintStatusJSON should include round number 1")
+	}
+}

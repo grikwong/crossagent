@@ -73,12 +73,16 @@
               <button id="advance-btn" class="btn btn-sm btn-block" data-tooltip="Manually advance to the next phase if auto-detection missed it">Advance</button>
               <button id="done-btn" class="btn btn-sm btn-block" data-tooltip="Mark this workflow as complete">Done</button>
             </div>
+            <button id="followup-btn" class="btn btn-sm btn-block hidden" data-tooltip="Start a new round of work on this completed workflow">Follow Up</button>
           </div>
         </div>
 
         <!-- Artifacts -->
         <div class="panel">
-          <div class="panel-header">Artifacts</div>
+          <div class="panel-header">
+            <span>Artifacts</span>
+            <select id="round-select" class="round-select hidden" aria-label="Select round"></select>
+          </div>
           <div id="artifact-list" class="artifact-list">
             <div class="artifact-item" data-artifact="plan">
               <span class="artifact-icon">-</span> plan.md
@@ -95,6 +99,7 @@
             <div class="artifact-item" data-artifact="memory">
               <span class="artifact-icon">-</span> memory.md
             </div>
+            <div id="attempt-artifacts-list"></div>
           </div>
         </div>
 
@@ -267,6 +272,23 @@
           <button type="submit" class="btn btn-primary btn-sm">Save &amp; Continue</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Followup Modal -->
+  <div id="followup-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>Follow Up on Workflow</h2>
+      <p class="followup-intro">Start a new round of work on this completed workflow. Previous artifacts will be archived.</p>
+      <label>New description (optional)
+        <textarea id="followup-description" rows="3" placeholder="Leave empty to keep current description"></textarea>
+        <span class="field-hint">Describe the follow-up task. Leave blank to continue with the same description.</span>
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="followup-cancel" class="btn btn-sm">Cancel</button>
+        <button type="button" id="followup-confirm" class="btn btn-primary btn-sm">Follow Up</button>
+      </div>
     </div>
   </div>
 
