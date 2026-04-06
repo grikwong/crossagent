@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/grikwong/crossagent/compare/v1.5.0...v1.6.0) (2026-04-06)
+
+
+### Features
+
+* add followup rounds for completed workflows ([fb12a84](https://github.com/grikwong/crossagent/commit/fb12a84c195fca1585eb912736013a2a4f1e0964))
+
 ## [1.5.0](https://github.com/grikwong/crossagent/compare/v1.4.0...v1.5.0) (2026-03-27)
 
 
