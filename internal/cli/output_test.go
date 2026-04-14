@@ -855,6 +855,144 @@ func TestMarshalCompact(t *testing.T) {
 	}
 }
 
+func TestStatusJSON_AttemptFields(t *testing.T) {
+	s := StatusJSON{
+		Name:       "test-wf",
+		AddDirs:    []string{},
+		Repos:      ReposJSON{Additional: []string{}},
+		RetryCount: 2,
+		AttemptArtifacts: []AttemptFileJSON{
+			{Phase: "plan", Attempt: 1, Exists: true, Path: "/tmp/wf/plan.attempt-1.md", Lines: 10},
+		},
+		AttemptChatHistory: []AttemptFileJSON{
+			{Phase: "plan", Attempt: 1, Exists: true, Path: "/tmp/wf/chat-history/plan.attempt-1.log", Size: 2048},
+		},
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	if !strings.Contains(out, `"attempt_artifacts"`) {
+		t.Error("StatusJSON with attempts should contain attempt_artifacts key")
+	}
+	if !strings.Contains(out, `"attempt_chat_history"`) {
+		t.Error("StatusJSON with attempts should contain attempt_chat_history key")
+	}
+	if !strings.Contains(out, `plan.attempt-1.md`) {
+		t.Error("attempt artifact path should be present")
+	}
+}
+
+func TestStatusJSON_NoAttemptFieldsWhenEmpty(t *testing.T) {
+	s := StatusJSON{
+		Name:    "test-wf",
+		AddDirs: []string{},
+		Repos:   ReposJSON{Additional: []string{}},
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+
+	if strings.Contains(out, `"attempt_artifacts"`) {
+		t.Error("StatusJSON without attempts should omit attempt_artifacts")
+	}
+	if strings.Contains(out, `"attempt_chat_history"`) {
+		t.Error("StatusJSON without attempts should omit attempt_chat_history")
+	}
+}
+
+func TestPrintStatusJSON_RootAttemptFields(t *testing.T) {
+	s := StatusJSON{
+		Name:       "test-wf",
+		AddDirs:    []string{},
+		Repos:      ReposJSON{Additional: []string{}},
+		RetryCount: 1,
+		AttemptArtifacts: []AttemptFileJSON{
+			{Phase: "plan", Attempt: 1, Exists: true, Path: "/tmp/wf/plan.attempt-1.md", Lines: 10},
+		},
+		AttemptChatHistory: []AttemptFileJSON{
+			{Phase: "plan", Attempt: 1, Exists: true, Path: "/tmp/wf/chat-history/plan.attempt-1.log", Size: 2048},
+		},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := PrintStatusJSON(s)
+
+	w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	// Should be valid JSON
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("PrintStatusJSON with root attempts is not valid JSON: %v\nOutput: %s", err, out)
+	}
+
+	if !strings.Contains(out, `"attempt_artifacts"`) {
+		t.Error("PrintStatusJSON should include root-level attempt_artifacts")
+	}
+	if !strings.Contains(out, `"attempt_chat_history"`) {
+		t.Error("PrintStatusJSON should include root-level attempt_chat_history")
+	}
+	if !strings.Contains(out, `plan.attempt-1.md`) {
+		t.Error("PrintStatusJSON should include attempt artifact path")
+	}
+}
+
+func TestPrintStatusJSON_NoRootAttemptFieldsWhenEmpty(t *testing.T) {
+	s := StatusJSON{
+		Name:    "test-wf",
+		AddDirs: []string{},
+		Repos:   ReposJSON{Additional: []string{}},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := PrintStatusJSON(s)
+
+	w.Close()
+	os.Stdout = old
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	// Should be valid JSON
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("PrintStatusJSON without attempts is not valid JSON: %v\nOutput: %s", err, out)
+	}
+
+	if strings.Contains(out, `"attempt_artifacts"`) {
+		t.Error("PrintStatusJSON should omit attempt_artifacts when empty")
+	}
+	if strings.Contains(out, `"attempt_chat_history"`) {
+		t.Error("PrintStatusJSON should omit attempt_chat_history when empty")
+	}
+}
+
 func TestRoundJSON_AttemptFields(t *testing.T) {
 	r := RoundJSON{
 		Number: 1,

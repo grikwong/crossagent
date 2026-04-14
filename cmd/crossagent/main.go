@@ -578,6 +578,12 @@ func cmdStatus(args []string) {
 			},
 		}
 
+		// Scan for attempt artifacts in current workflow directory
+		if retryCount > 0 {
+			out.AttemptArtifacts = scanAttemptArtifacts(d)
+			out.AttemptChatHistory = scanAttemptChatHistory(d)
+		}
+
 		// Build rounds array if followup has occurred
 		if cfg.FollowupRound > 0 {
 			var rounds []cli.RoundJSON

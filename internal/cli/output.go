@@ -102,8 +102,10 @@ type StatusJSON struct {
 	MaxRetries    int                 `json:"max_retries"`
 	FollowupRound int                `json:"followup_round,omitempty"`
 	Rounds        []RoundJSON        `json:"rounds,omitempty"`
-	Artifacts     OrderedArtifacts   `json:"artifacts"`
-	ChatHistory   OrderedChatHistory `json:"chat_history"`
+	Artifacts          OrderedArtifacts   `json:"artifacts"`
+	ChatHistory        OrderedChatHistory `json:"chat_history"`
+	AttemptArtifacts   []AttemptFileJSON  `json:"attempt_artifacts,omitempty"`
+	AttemptChatHistory []AttemptFileJSON  `json:"attempt_chat_history,omitempty"`
 }
 
 // OrderedChatHistory holds per-phase chat history entries in fixed order.
@@ -461,7 +463,13 @@ func PrintStatusJSON(s StatusJSON) error {
 	fmt.Fprintf(&buf, "    \"review\": %s,\n", mc(s.ChatHistory.Review))
 	fmt.Fprintf(&buf, "    \"implement\": %s,\n", mc(s.ChatHistory.Implement))
 	fmt.Fprintf(&buf, "    \"verify\": %s\n", mc(s.ChatHistory.Verify))
-	buf.WriteString("  }\n")
+	if len(s.AttemptArtifacts) > 0 || len(s.AttemptChatHistory) > 0 {
+		buf.WriteString("  },\n")
+		fmt.Fprintf(&buf, "  \"attempt_artifacts\": %s,\n", mc(s.AttemptArtifacts))
+		fmt.Fprintf(&buf, "  \"attempt_chat_history\": %s\n", mc(s.AttemptChatHistory))
+	} else {
+		buf.WriteString("  }\n")
+	}
 	buf.WriteString("}\n")
 
 	_, err := os.Stdout.Write(buf.Bytes())
