@@ -821,7 +821,13 @@ func handleWorkflowArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wfDir := state.WorkflowDir(name)
-	filePath := filepath.Join(wfDir, artType+".md")
+	// Support ?attempt=N for retry-attempt artifacts
+	var filePath string
+	if attemptStr := r.URL.Query().Get("attempt"); attemptStr != "" {
+		filePath = filepath.Join(wfDir, artType+".attempt-"+attemptStr+".md")
+	} else {
+		filePath = filepath.Join(wfDir, artType+".md")
+	}
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		writeError(w, 404, "Artifact not found")
@@ -982,7 +988,13 @@ func handleWorkflowChatHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wfDir := state.WorkflowDir(name)
-	logPath := filepath.Join(wfDir, "chat-history", phase+".log")
+	// Support ?attempt=N for retry-attempt chat logs
+	var logPath string
+	if attemptStr := r.URL.Query().Get("attempt"); attemptStr != "" {
+		logPath = filepath.Join(wfDir, "chat-history", phase+".attempt-"+attemptStr+".log")
+	} else {
+		logPath = filepath.Join(wfDir, "chat-history", phase+".log")
+	}
 
 	info, err := os.Stat(logPath)
 	if err != nil {
@@ -1027,7 +1039,13 @@ func handleWorkflowChatHistoryStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wfDir := state.WorkflowDir(name)
-	logPath := filepath.Join(wfDir, "chat-history", phase+".log")
+	// Support ?attempt=N for retry-attempt chat logs
+	var logPath string
+	if attemptStr := r.URL.Query().Get("attempt"); attemptStr != "" {
+		logPath = filepath.Join(wfDir, "chat-history", phase+".attempt-"+attemptStr+".log")
+	} else {
+		logPath = filepath.Join(wfDir, "chat-history", phase+".log")
+	}
 
 	if _, err := os.Stat(logPath); err != nil {
 		writeError(w, 404, "Chat history not found")

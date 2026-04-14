@@ -407,18 +407,23 @@ function renderArtifactList() {
       icon.textContent = '-';
     }
   });
-  // Render attempt artifacts/chat-history when viewing an archived round
+  // Render attempt artifacts/chat-history for archived round OR current workflow
   const attemptList = document.getElementById('attempt-artifacts-list');
   if (attemptList) {
-    if (round && ((round.attempt_artifacts && round.attempt_artifacts.length) ||
-                  (round.attempt_chat_history && round.attempt_chat_history.length))) {
+    const attemptArtifacts = round
+      ? (round.attempt_artifacts || [])
+      : (state.attempt_artifacts || []);
+    const attemptChat = round
+      ? (round.attempt_chat_history || [])
+      : (state.attempt_chat_history || []);
+    if (attemptArtifacts.length || attemptChat.length) {
       let html = '<div class="attempt-section-label">Retry Attempts</div>';
-      (round.attempt_artifacts || []).forEach(a => {
+      attemptArtifacts.forEach(a => {
         html += `<div class="artifact-item exists attempt-item" data-attempt-phase="${esc(a.phase)}" data-attempt-num="${a.attempt}" data-attempt-type="artifact">
           <span class="artifact-icon">\u2713</span> ${esc(a.phase)}.attempt-${a.attempt}.md
         </div>`;
       });
-      (round.attempt_chat_history || []).forEach(a => {
+      attemptChat.forEach(a => {
         html += `<div class="artifact-item exists attempt-item" data-attempt-phase="${esc(a.phase)}" data-attempt-num="${a.attempt}" data-attempt-type="chat">
           <span class="artifact-icon">\u2713</span> ${esc(a.phase)}.attempt-${a.attempt}.log
         </div>`;
@@ -1436,9 +1441,14 @@ async function loadAttemptArtifact(phase, attempt, roundNum) {
   document.querySelectorAll('.artifact-item').forEach(el => el.classList.remove('active'));
   const viewer = document.getElementById('artifact-viewer');
   const title = document.getElementById('artifact-title');
-  title.textContent = `${phase}.attempt-${attempt}.md (Round ${roundNum})`;
+  const label = roundNum !== null && roundNum !== undefined
+    ? `${phase}.attempt-${attempt}.md (Round ${roundNum})`
+    : `${phase}.attempt-${attempt}.md`;
+  title.textContent = label;
   try {
-    const endpoint = `/rounds/${roundNum}/artifact/${phase}?attempt=${attempt}`;
+    const endpoint = roundNum !== null && roundNum !== undefined
+      ? `/rounds/${roundNum}/artifact/${phase}?attempt=${attempt}`
+      : `/artifact/${phase}?attempt=${attempt}`;
     const data = await wfApi(endpoint);
     if (data.error) {
       viewer.innerHTML = `<p class="muted centered">${esc(data.error)}</p>`;
@@ -1460,6 +1470,7 @@ async function loadChatHistory(phase, roundNum, attempt) {
       if (attempt) endpoint += `?attempt=${attempt}`;
     } else {
       endpoint = `/chat-history/${phase}`;
+      if (attempt) endpoint += `?attempt=${attempt}`;
     }
     const data = await wfApi(endpoint);
     if (!data.exists) {
@@ -1481,6 +1492,7 @@ async function loadChatHistory(phase, roundNum, attempt) {
         if (attempt) streamPath += `?attempt=${attempt}`;
       } else if (state && state.name) {
         streamPath = `/api/workflow/${encodeURIComponent(state.name)}/chat-history/${phase}/stream`;
+        if (attempt) streamPath += `?attempt=${attempt}`;
       } else {
         streamPath = `/api/chat-history/${phase}/stream`;
       }

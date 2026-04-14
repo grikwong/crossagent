@@ -411,3 +411,106 @@ func TestHandleWorkflowRoundChatHistoryWithAttempt(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleWorkflowArtifactWithAttempt(t *testing.T) {
+	_, cleanup := setupTestWorkflow(t)
+	defer cleanup()
+
+	tmpHome := os.Getenv("CROSSAGENT_HOME")
+	wfDir := filepath.Join(tmpHome, "workflows", "test-wf")
+	if err := os.WriteFile(filepath.Join(wfDir, "review.attempt-1.md"), []byte("# Current WF Attempt 1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sm := NewSessionManager()
+	mux := NewMux(sm)
+
+	t.Run("current workflow attempt artifact success", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workflow/test-wf/artifact/review?attempt=1", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "Current WF Attempt 1") {
+			t.Error("response should contain attempt artifact content")
+		}
+	})
+
+	t.Run("current workflow attempt artifact not found", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workflow/test-wf/artifact/review?attempt=99", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != 404 {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+}
+
+func TestHandleWorkflowChatHistoryWithAttempt(t *testing.T) {
+	_, cleanup := setupTestWorkflow(t)
+	defer cleanup()
+
+	tmpHome := os.Getenv("CROSSAGENT_HOME")
+	chatDir := filepath.Join(tmpHome, "workflows", "test-wf", "chat-history")
+	if err := os.MkdirAll(chatDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chatDir, "review.attempt-1.log"), []byte("current wf attempt chat"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sm := NewSessionManager()
+	mux := NewMux(sm)
+
+	t.Run("current workflow attempt chat history success", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workflow/test-wf/chat-history/review?attempt=1", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "current wf attempt chat") {
+			t.Error("response should contain attempt chat history content")
+		}
+	})
+
+	t.Run("current workflow attempt chat history not found", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workflow/test-wf/chat-history/review?attempt=99", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if !strings.Contains(w.Body.String(), `"exists":false`) {
+			t.Error("response should indicate non-existence for missing attempt")
+		}
+	})
+
+	t.Run("current workflow attempt chat history stream", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workflow/test-wf/chat-history/review/stream?attempt=1", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "current wf attempt chat") {
+			t.Error("response should contain streamed attempt chat content")
+		}
+	})
+
+	t.Run("current workflow attempt chat history stream not found", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/workflow/test-wf/chat-history/review/stream?attempt=99", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != 404 {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+}
