@@ -74,10 +74,10 @@ async function fetchStatus() {
 async function fetchList() {
   try {
     const data = await api('/list');
-    renderWorkflowSelect(data);
+    renderWorkflowPicker(data);
     return data;
   } catch {
-    renderWorkflowSelect({ workflows: [] });
+    renderWorkflowPicker({ workflows: [] });
     return { workflows: [] };
   }
 }
@@ -318,30 +318,216 @@ function renderNoWorkflow() {
   setGuide('Create or select a workflow to get started.');
 }
 
-function renderWorkflowSelect(data) {
-  const sel = document.getElementById('workflow-select');
-  sel.innerHTML = '';
+// ── Workflow Picker API ────────────────────────────────────────────────────
+
+let _pickerSelection = '';
+let _pickerCallback = null;
+let _pickerHighlightIndex = -1;
+let _pickerWorkflows = [];  // Filtered list currently rendered
+
+function setWorkflowPickerSelection(name) {
+  _pickerSelection = name || '';
+  const textEl = document.getElementById('wp-trigger').querySelector('.wp-selected-text');
+  if (textEl) textEl.textContent = name || 'No workflows';
+  // Update selected styling in dropdown
+  document.querySelectorAll('#wp-list .wp-option').forEach(el => {
+    el.classList.toggle('selected', el.dataset.name === name);
+  });
+}
+
+function getSelectedWorkflow() {
+  return _pickerSelection;
+}
+
+function bindWorkflowPicker(onSelect) {
+  _pickerCallback = onSelect;
+}
+
+function openWorkflowPicker() {
+  const dropdown = document.getElementById('wp-dropdown');
+  const trigger = document.getElementById('wp-trigger');
+  if (!dropdown || !trigger) return;
+  dropdown.classList.remove('hidden');
+  trigger.setAttribute('aria-expanded', 'true');
+  const search = document.getElementById('wp-search');
+  if (search) { search.value = ''; search.focus(); }
+  filterWorkflowPicker('');
+  _pickerHighlightIndex = -1;
+}
+
+function closeWorkflowPicker() {
+  const dropdown = document.getElementById('wp-dropdown');
+  const trigger = document.getElementById('wp-trigger');
+  if (!dropdown || !trigger) return;
+  dropdown.classList.add('hidden');
+  trigger.setAttribute('aria-expanded', 'false');
+  _pickerHighlightIndex = -1;
+}
+
+function isWorkflowPickerOpen() {
+  const dropdown = document.getElementById('wp-dropdown');
+  return dropdown && !dropdown.classList.contains('hidden');
+}
+
+function filterWorkflowPicker(query) {
+  const list = document.getElementById('wp-list');
+  if (!list) return;
+  const q = query.toLowerCase();
+  const options = list.querySelectorAll('.wp-option');
+  const groups = list.querySelectorAll('.wp-group-header');
+  let visibleCount = 0;
+
+  options.forEach(el => {
+    const name = (el.dataset.name || '').toLowerCase();
+    const match = !q || name.includes(q);
+    el.style.display = match ? '' : 'none';
+    if (match) visibleCount++;
+  });
+
+  // Hide group headers if all their options are hidden
+  groups.forEach(header => {
+    const project = header.dataset.project;
+    const groupOptions = list.querySelectorAll(`.wp-option[data-project="${project}"]`);
+    const anyVisible = [...groupOptions].some(o => o.style.display !== 'none');
+    header.style.display = anyVisible ? '' : 'none';
+  });
+
+  // Show/hide empty state
+  let emptyEl = list.querySelector('.wp-empty');
+  if (visibleCount === 0 && _pickerWorkflows.length > 0) {
+    if (!emptyEl) {
+      emptyEl = document.createElement('div');
+      emptyEl.className = 'wp-empty';
+      list.appendChild(emptyEl);
+    }
+    emptyEl.textContent = 'No matching workflows';
+    emptyEl.style.display = '';
+  } else if (emptyEl) {
+    emptyEl.style.display = 'none';
+  }
+
+  _pickerHighlightIndex = -1;
+  clearPickerHighlight();
+}
+
+function clearPickerHighlight() {
+  document.querySelectorAll('#wp-list .wp-option.active').forEach(el => el.classList.remove('active'));
+}
+
+function getVisiblePickerOptions() {
+  return [...document.querySelectorAll('#wp-list .wp-option')].filter(el => el.style.display !== 'none');
+}
+
+function movePickerHighlight(delta) {
+  const visible = getVisiblePickerOptions();
+  if (visible.length === 0) return;
+  clearPickerHighlight();
+  _pickerHighlightIndex += delta;
+  if (_pickerHighlightIndex < 0) _pickerHighlightIndex = visible.length - 1;
+  if (_pickerHighlightIndex >= visible.length) _pickerHighlightIndex = 0;
+  visible[_pickerHighlightIndex].classList.add('active');
+  visible[_pickerHighlightIndex].scrollIntoView({ block: 'nearest' });
+}
+
+function selectPickerHighlight() {
+  const visible = getVisiblePickerOptions();
+  if (_pickerHighlightIndex >= 0 && _pickerHighlightIndex < visible.length) {
+    const name = visible[_pickerHighlightIndex].dataset.name;
+    selectPickerOption(name);
+  }
+}
+
+function selectPickerOption(name) {
+  setWorkflowPickerSelection(name);
+  closeWorkflowPicker();
+  if (_pickerCallback) _pickerCallback(name);
+}
+
+function renderWorkflowPicker(data) {
+  const list = document.getElementById('wp-list');
+  if (!list) return;
+  list.innerHTML = '';
+
   if (!data.workflows || data.workflows.length === 0) {
-    sel.innerHTML = '<option value="">No workflows</option>';
+    list.innerHTML = '<div class="wp-empty">No workflows</div>';
+    setWorkflowPickerSelection('');
+    _pickerWorkflows = [];
     return;
   }
+
   const filter = selectedProjectFilter;
   let filtered = data.workflows;
   if (filter) {
     filtered = data.workflows.filter(wf => wf.project === filter);
   }
   if (filtered.length === 0) {
-    sel.innerHTML = '<option value="">No workflows</option>';
+    list.innerHTML = '<div class="wp-empty">No workflows</div>';
+    _pickerWorkflows = [];
     return;
   }
+
+  _pickerWorkflows = filtered;
+
+  // Group by project
+  const groups = {};
   filtered.forEach(wf => {
-    const opt = document.createElement('option');
-    opt.value = wf.name;
-    const projectLabel = wf.project && wf.project !== 'default' ? ` [${wf.project}]` : '';
-    opt.textContent = `${wf.name} (${wf.phase_label})${projectLabel}`;
-    opt.selected = wf.active;
-    sel.appendChild(opt);
+    const proj = wf.project || 'default';
+    if (!groups[proj]) groups[proj] = [];
+    groups[proj].push(wf);
   });
+
+  const frag = document.createDocumentFragment();
+  const projectNames = Object.keys(groups).sort((a, b) => {
+    if (a === 'default') return -1;
+    if (b === 'default') return 1;
+    return a.localeCompare(b);
+  });
+
+  for (const proj of projectNames) {
+    // Only show group header if there are multiple projects visible
+    if (projectNames.length > 1) {
+      const header = document.createElement('div');
+      header.className = 'wp-group-header';
+      header.dataset.project = proj;
+      header.textContent = proj;
+      frag.appendChild(header);
+    }
+
+    for (const wf of groups[proj]) {
+      const opt = document.createElement('div');
+      opt.className = 'wp-option';
+      if (wf.active) opt.classList.add('selected');
+      opt.dataset.name = wf.name;
+      opt.dataset.project = proj;
+      opt.setAttribute('role', 'option');
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'wp-option-name';
+      nameSpan.textContent = wf.name;
+
+      const phaseSpan = document.createElement('span');
+      phaseSpan.className = 'wp-option-phase';
+      phaseSpan.textContent = wf.phase_label || '';
+
+      opt.appendChild(nameSpan);
+      opt.appendChild(phaseSpan);
+
+      opt.addEventListener('click', () => selectPickerOption(wf.name));
+      frag.appendChild(opt);
+    }
+  }
+
+  list.appendChild(frag);
+
+  // Set trigger text to active workflow
+  const active = filtered.find(wf => wf.active);
+  if (active) {
+    setWorkflowPickerSelection(active.name);
+  } else if (_pickerSelection) {
+    // Keep current selection text if it exists in the list
+    const exists = filtered.find(wf => wf.name === _pickerSelection);
+    if (!exists) setWorkflowPickerSelection('');
+  }
 }
 
 function renderPhaseTracker() {
@@ -1581,9 +1767,8 @@ async function createWorkflow(name, repo, description, addDirs, project) {
     // Auto-select the newly created workflow
     await switchWorkflow(name);
 
-    // Update the dropdown to reflect the selection
-    const sel = document.getElementById('workflow-select');
-    if (sel) sel.value = name;
+    // Update the picker to reflect the selection
+    setWorkflowPickerSelection(name);
 
     // Auto-suggest project if created under "default"
     if (!project || project === 'default') {
@@ -1776,7 +1961,7 @@ function showElicitation(workflowName) {
 
 const TOUR_STEPS = [
   { target: '#new-btn', text: 'Click here to create a new workflow. A workflow is a task or feature you want the AI to plan, review, implement, and verify.', position: 'bottom' },
-  { target: '#workflow-select', text: 'Switch between your workflows here. Each workflow tracks its own progress through the four phases.', position: 'bottom' },
+  { target: '#workflow-picker', text: 'Switch between your workflows here. Each workflow tracks its own progress through the four phases.', position: 'bottom' },
   { target: '#project-select', text: 'Filter workflows by project. Projects group related workflows together.', position: 'bottom' },
   { target: '#phase-tracker', text: 'Your workflow progresses through 4 phases: Plan → Review → Implement → Verify. Click a completed phase to replay its chat history.', position: 'right' },
   { target: '#run-phase-btn', text: 'Click this to launch the current phase. The AI agent will work in the terminal below.', position: 'right' },
@@ -1902,9 +2087,36 @@ function bindEvents() {
     if (activeArtifact) loadArtifact(activeArtifact);
   });
 
-  document.getElementById('workflow-select').addEventListener('change', (e) => {
+  // Workflow picker — trigger open/close
+  document.getElementById('wp-trigger').addEventListener('click', () => {
+    if (isWorkflowPickerOpen()) closeWorkflowPicker();
+    else openWorkflowPicker();
+  });
+
+  // Workflow picker — search filtering
+  document.getElementById('wp-search').addEventListener('input', (e) => {
+    filterWorkflowPicker(e.target.value);
+  });
+
+  // Workflow picker — keyboard navigation
+  document.getElementById('wp-search').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); movePickerHighlight(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); movePickerHighlight(-1); }
+    else if (e.key === 'Enter') { e.preventDefault(); selectPickerHighlight(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeWorkflowPicker(); }
+  });
+
+  // Workflow picker — click outside to close
+  document.addEventListener('click', (e) => {
+    if (!isWorkflowPickerOpen()) return;
+    const picker = document.getElementById('workflow-picker');
+    if (picker && !picker.contains(e.target)) closeWorkflowPicker();
+  });
+
+  // Bind the picker selection callback
+  bindWorkflowPicker((name) => {
     selectedRound = null;
-    switchWorkflow(e.target.value);
+    switchWorkflow(name);
     closeSidebar();
   });
 

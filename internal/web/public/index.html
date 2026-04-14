@@ -21,9 +21,16 @@
         <select id="project-select" aria-label="Filter by project" data-tooltip="Filter workflows by project">
           <option value="">All Projects</option>
         </select>
-        <select id="workflow-select" aria-label="Select workflow">
-          <option value="">No workflows</option>
-        </select>
+        <div id="workflow-picker" class="workflow-picker" aria-label="Select workflow">
+          <button class="wp-trigger" id="wp-trigger" aria-haspopup="listbox" aria-expanded="false">
+            <span class="wp-selected-text">No workflows</span>
+            <span class="wp-arrow">&#9662;</span>
+          </button>
+          <div class="wp-dropdown hidden" id="wp-dropdown">
+            <input type="text" class="wp-search" id="wp-search" placeholder="Search workflows..." autocomplete="off" />
+            <div class="wp-list" id="wp-list" role="listbox"></div>
+          </div>
+        </div>
         <button id="new-btn" class="btn btn-sm" aria-label="Create a new workflow" data-tooltip="Create a new workflow — define a task for the AI to work on">+</button>
         <button id="manage-projects-btn" class="btn btn-sm" data-tooltip="Create and manage projects to organize your workflows">Projects</button>
       </div>
