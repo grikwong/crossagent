@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-Crossagent is a cross-model AI agent orchestrator with a browser-based Web UI. It ships with builtin `claude` and `codex` agents, and each workflow phase can be reassigned to any registered static agent.
+Crossagent is a cross-model AI agent orchestrator with a browser-based Web UI. It ships with builtin `claude`, `codex`, and `gemini` agents, and each workflow phase can be reassigned to any registered static agent.
 
 Default phase mapping:
 
@@ -142,11 +142,11 @@ Critical boundaries:
 
 ## When Modifying the CLI
 
-- Supported agent adapters are `claude` and `codex`
+- Supported agent adapters are `claude`, `codex`, and `gemini`
 - Maintain the phase gate pattern: each phase checks prerequisites before running
 - All output files (plan.md, review.md, verify.md) are written by the launched AI, not by crossagent itself
 - The workflow dir is always passed as `--add-dir` to both adapters
-- Agent adapters: "claude" and "codex" — new adapters require updates in both `agent.go` and `launcher.go`
+- Agent adapters: "claude", "codex", and "gemini" — new adapters require updates in both `agent.go` and `launcher.go`
 - Prompt templates live in `internal/prompt/templates/` as embedded `.md.tmpl` files
 - Verdict parsing must handle case-insensitive matching and various phrasings
 - Run tests with `make test` (runs `go test ./...` then integration tests)
@@ -154,7 +154,7 @@ Critical boundaries:
 ## When Modifying Go Packages
 
 - Use atomic writes (`atomicWrite`) for any state mutation
-- Agent adapters: "claude" and "codex" — new adapters require updates in both `agent.go` and `launcher.go`
+- Agent adapters: "claude", "codex", and "gemini" — new adapters require updates in both `agent.go` and `launcher.go`
 - Prompt templates live in `internal/prompt/templates/` as embedded `.md.tmpl` files
 - Verdict parsing must handle case-insensitive matching and various phrasings
 - Run tests with `go test ./internal/...`

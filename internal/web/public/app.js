@@ -27,7 +27,7 @@ let projectsData = null;       // Cached projects list
 let selectedProjectFilter = ''; // Current project filter in topbar
 let viewingChatHistory = false; // Whether terminal is showing historical chat replay
 let selectedRound = null;      // Selected archived round number (null = current)
-let currentAdapter = null;     // Active agent adapter ('claude' or 'codex') for PTY behavior
+let currentAdapter = null;     // Active agent adapter ('claude' | 'codex' | 'gemini') for PTY behavior
 
 // ── API ─────────────────────────────────────────────────────────────────────
 

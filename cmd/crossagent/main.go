@@ -1198,7 +1198,7 @@ func cmdAgents(args []string) {
 	case "help", "--help", "-h":
 		fmt.Println(`Usage:
   crossagent agents list [--json]
-  crossagent agents add <name> --adapter <claude|codex> [--command <cmd>] [--display-name <name>]
+  crossagent agents add <name> --adapter <claude|codex|gemini> [--command <cmd>] [--display-name <name>]
   crossagent agents remove <name>
   crossagent agents show [--workflow <name>] [--json]
   crossagent agents assign <plan|review|implement|verify> <agent> [--workflow <name>]
@@ -1251,7 +1251,7 @@ func cmdAgentsList(args []string) {
 
 func cmdAgentsAdd(args []string) {
 	if len(args) == 0 {
-		die("Usage: crossagent agents add <name> --adapter <claude|codex> [--command <cmd>] [--display-name <name>]")
+		die("Usage: crossagent agents add <name> --adapter <claude|codex|gemini> [--command <cmd>] [--display-name <name>]")
 	}
 
 	name := cli.SanitizeAgentName(args[0])
@@ -1261,7 +1261,7 @@ func cmdAgentsAdd(args []string) {
 	args = args[1:]
 
 	// Check not builtin
-	if name == "claude" || name == "codex" {
+	if name == "claude" || name == "codex" || name == "gemini" {
 		die(fmt.Sprintf("Cannot overwrite builtin agent '%s'.", name))
 	}
 	// Check doesn't already exist
@@ -1295,8 +1295,8 @@ func cmdAgentsAdd(args []string) {
 		}
 	}
 
-	if adapter != "claude" && adapter != "codex" {
-		die("Agent adapter must be one of: claude, codex")
+	if adapter != "claude" && adapter != "codex" && adapter != "gemini" {
+		die("Agent adapter must be one of: claude, codex, gemini")
 	}
 	if command == "" {
 		command = adapter
@@ -1317,7 +1317,7 @@ func cmdAgentsRemove(args []string) {
 	}
 	name := args[0]
 
-	if name == "claude" || name == "codex" {
+	if name == "claude" || name == "codex" || name == "gemini" {
 		die(fmt.Sprintf("Cannot remove builtin agent '%s'.", name))
 	}
 

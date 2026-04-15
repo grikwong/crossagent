@@ -104,11 +104,11 @@ func TestListAgents(t *testing.T) {
 		t.Fatalf("ListAgents: %v", err)
 	}
 
-	// Should be: claude, codex (builtins), then alpha, zebra (custom sorted).
-	if len(agents) != 4 {
-		t.Fatalf("expected 4 agents, got %d", len(agents))
+	// Should be: claude, codex, gemini (builtins), then alpha, zebra (custom sorted).
+	if len(agents) != 5 {
+		t.Fatalf("expected 5 agents, got %d", len(agents))
 	}
-	expected := []string{"claude", "codex", "alpha", "zebra"}
+	expected := []string{"claude", "codex", "gemini", "alpha", "zebra"}
 	for i, name := range expected {
 		if agents[i].Name != name {
 			t.Errorf("agents[%d].Name = %q, want %q", i, agents[i].Name, name)
@@ -123,8 +123,8 @@ func TestListAgentsNoCustom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
-	if len(agents) != 2 {
-		t.Fatalf("expected 2 agents (builtins only), got %d", len(agents))
+	if len(agents) != 3 {
+		t.Fatalf("expected 3 agents (builtins only), got %d", len(agents))
 	}
 }
 

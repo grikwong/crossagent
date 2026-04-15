@@ -507,10 +507,13 @@ func TestBuildCodexSpawnArgsOrdering(t *testing.T) {
 	args := buildCodexSpawnArgs(repo, launchArgs, prompt)
 
 	// Expected shape:
-	//   --full-auto -C <repo> -c <trust-override> --add-dir ... -- <prompt>
+	//   --full-auto -C <repo> -c <trust> -c <sandbox_mode> -c <writable_roots>
+	//   --add-dir ... -- <prompt>
 	wantPrefix := []string{
 		"--full-auto", "-C", repo,
 		"-c", `projects."/tmp/repo".trust_level="trusted"`,
+		"-c", `sandbox_mode="workspace-write"`,
+		"-c", `sandbox_workspace_write.writable_roots=["/tmp/wf","/tmp/mem"]`,
 		"--add-dir", "/tmp/wf", "--add-dir", "/tmp/mem",
 		"--", prompt,
 	}
@@ -594,6 +597,56 @@ func TestBuildPhaseCmdCodexAdapterIncludesTrustOverride(t *testing.T) {
 	}
 }
 
+func TestBuildPhaseCmdCodexAdapterPinsSandboxScope(t *testing.T) {
+	// codex must be forced into workspace-write sandbox mode with an
+	// explicit writable_roots list covering every directory crossagent
+	// passes via --add-dir. This guarantees "sandbox limited to directories
+	// explicitly given" regardless of the user's codex TOML defaults.
+	home := setupTestHome(t)
+
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755)
+	os.WriteFile(filepath.Join(wfDir, "phase"), []byte("1\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "config"), []byte("repo=/tmp/repo\nproject=default\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "description"), []byte("Test feature\n"), 0644)
+
+	state.InitGlobalMemory()
+	state.InitProjectMemory("default")
+
+	if err := SetPhaseAgent(wfDir, "plan", "codex"); err != nil {
+		t.Fatalf("SetPhaseAgent: %v", err)
+	}
+
+	result, err := BuildPhaseCmd(wfDir, "test-wf", "plan", false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var haveMode, haveRoots bool
+	var rootsVal string
+	for i, a := range result.Args {
+		if a == "-c" && i+1 < len(result.Args) {
+			v := result.Args[i+1]
+			if v == `sandbox_mode="workspace-write"` {
+				haveMode = true
+			}
+			if strings.HasPrefix(v, "sandbox_workspace_write.writable_roots=[") {
+				haveRoots = true
+				rootsVal = v
+			}
+		}
+	}
+	if !haveMode {
+		t.Errorf(`codex Args missing sandbox_mode="workspace-write" override; got %v`, result.Args)
+	}
+	if !haveRoots {
+		t.Fatalf("codex Args missing sandbox_workspace_write.writable_roots override; got %v", result.Args)
+	}
+	if !strings.Contains(rootsVal, wfDir) {
+		t.Errorf("writable_roots should contain workflow dir %q; got %q", wfDir, rootsVal)
+	}
+}
+
 func TestBuildPhaseCmdClaudeAdapterOmitsTrustOverride(t *testing.T) {
 	// The trust override is codex-only; claude argv must not carry it.
 	home := setupTestHome(t)
@@ -618,6 +671,87 @@ func TestBuildPhaseCmdClaudeAdapterOmitsTrustOverride(t *testing.T) {
 		if strings.Contains(a, "trust_level") {
 			t.Errorf("claude Args must not contain trust_level override: %v", result.Args)
 			break
+		}
+	}
+}
+
+func TestBuildPhaseCmdGeminiAdapter(t *testing.T) {
+	// Gemini uses --yolo to auto-approve, --include-directories with a
+	// comma-separated list (not repeated --add-dir flags), and -p for the
+	// bootstrap prompt. Guards the Web UI / phase-cmd --json launch path.
+	home := setupTestHome(t)
+
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755)
+	os.WriteFile(filepath.Join(wfDir, "phase"), []byte("1\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "config"), []byte("repo=/tmp/repo\nproject=default\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "description"), []byte("Test feature\n"), 0644)
+
+	state.InitGlobalMemory()
+	state.InitProjectMemory("default")
+
+	if err := SetPhaseAgent(wfDir, "plan", "gemini"); err != nil {
+		t.Fatalf("SetPhaseAgent: %v", err)
+	}
+
+	result, err := BuildPhaseCmd(wfDir, "test-wf", "plan", false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Agent.Adapter != "gemini" {
+		t.Fatalf("agent.adapter = %q, want %q", result.Agent.Adapter, "gemini")
+	}
+
+	var yoloIdx, sandboxIdx, includeIdx, includeVal, promptIdx = -1, -1, -1, -1, -1
+	for i, a := range result.Args {
+		switch a {
+		case "--yolo":
+			if yoloIdx == -1 {
+				yoloIdx = i
+			}
+		case "--sandbox":
+			if sandboxIdx == -1 {
+				sandboxIdx = i
+			}
+		case "--include-directories":
+			if includeIdx == -1 {
+				includeIdx = i
+				includeVal = i + 1
+			}
+		case "-p":
+			if promptIdx == -1 {
+				promptIdx = i
+			}
+		}
+	}
+
+	if yoloIdx == -1 {
+		t.Errorf("gemini Args missing --yolo; got %v", result.Args)
+	}
+	if sandboxIdx == -1 {
+		t.Errorf("gemini Args missing --sandbox (writes must be OS-sandboxed); got %v", result.Args)
+	}
+	if includeIdx == -1 || includeVal >= len(result.Args) {
+		t.Fatalf("gemini Args missing --include-directories <list>; got %v", result.Args)
+	}
+	list := result.Args[includeVal]
+	if !strings.Contains(list, wfDir) {
+		t.Errorf("include-directories list should contain workflow dir %q; got %q", wfDir, list)
+	}
+	if strings.Contains(list, " ") {
+		t.Errorf("include-directories list should be comma-separated (no spaces); got %q", list)
+	}
+	if promptIdx == -1 || promptIdx+1 >= len(result.Args) {
+		t.Fatalf("gemini Args missing -p <prompt>; got %v", result.Args)
+	}
+	if !strings.HasPrefix(result.Args[promptIdx+1], "Read and follow the instructions at ") {
+		t.Errorf("gemini -p prompt should be a bootstrap instruction; got %q", result.Args[promptIdx+1])
+	}
+	// Claude-specific flags must not leak.
+	for _, a := range result.Args {
+		if a == "--permission-mode" || a == "--settings" || a == "--add-dir" || a == "--full-auto" {
+			t.Errorf("gemini Args should not contain non-gemini flag %q; got %v", a, result.Args)
 		}
 	}
 }

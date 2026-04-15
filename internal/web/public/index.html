@@ -257,7 +257,7 @@
         </div>
       </section>
       <section class="modal-section">
-      <p class="muted">Register custom CLI agents. Adapter must be <code>claude</code> or <code>codex</code>; use <em>Command</em> to point at a different binary (e.g. <code>gemini</code>).</p>
+      <p class="muted">Register custom CLI agents. Adapter must be <code>claude</code>, <code>codex</code>, or <code>gemini</code>; use <em>Command</em> to point at a different binary.</p>
       <div id="agents-list-wrap">
         <table id="agents-table" class="agents-table">
           <thead>
@@ -274,6 +274,7 @@
             <select id="agent-adapter">
               <option value="claude">claude</option>
               <option value="codex">codex</option>
+              <option value="gemini">gemini</option>
             </select>
           </label>
           <label>Command<input type="text" id="agent-command" placeholder="gemini"></label>

@@ -35,7 +35,7 @@ Phase assignments are configurable per workflow via the `agents assign` command.
 Go packages in `internal/` provide all business logic:
 
 - **`internal/state/`** — Config, workflow, project, and memory file operations. Uses atomic writes (temp file + rename) and file locking (`syscall.Flock`) for concurrent access safety.
-- **`internal/agent/`** — Agent registry, phase assignments, CLI launcher. Supports `claude` and `codex` adapters. Builds launch arguments including `--add-dir` flags and sandbox settings.
+- **`internal/agent/`** — Agent registry, phase assignments, CLI launcher. Supports `claude`, `codex`, and `gemini` adapters. Builds launch arguments including `--add-dir` flags and sandbox settings.
 - **`internal/cli/`** — JSON types, ordered serialization, hybrid formatting for CLI output.
 - **`internal/prompt/`** — Template-based prompt generation using embedded Go templates (`embed.FS`). Injects three-tier memory context into each phase prompt.
 - **`internal/judge/`** — Verdict parsing for review and verify outputs. Handles case-insensitive matching across various phrasings.
@@ -108,12 +108,18 @@ The Web UI spawns interactive agent sessions via WebSocket:
 
 ## Agent Adapters
 
-Two built-in adapters: `claude` (Claude Code CLI) and `codex` (Codex CLI).
+Three built-in adapters:
+
+- `claude` (Claude Code CLI) — `--permission-mode auto` auto-approves tool calls; a generated `--settings` JSON enables the built-in sandbox with `allowWrite` pinned to {workflow dir, repo, global/project memory, add_dirs}; repeated `--add-dir` flags surface those dirs as workspace roots.
+- `codex` (Codex CLI) — `--full-auto` auto-approves tool calls; `-c sandbox_mode="workspace-write"` forces the workspace-write sandbox (overriding any user default), and `-c sandbox_workspace_write.writable_roots=[…]` explicitly lists every add-dir (memory + add_dirs) as writable, so writes outside `{repo} ∪ writable_roots` are blocked; a pre-trust override avoids the "Do you trust this folder?" prompt; the full prompt content is inlined (general + phase concatenated).
+- `gemini` (Google Gemini CLI) — `--yolo` auto-approves tool calls, `--sandbox` runs the agent under an OS-level sandbox (sandbox-exec on macOS, Docker/Podman on Linux) scoped to the project dir plus `--include-directories <comma-list>`; the bootstrap prompt is passed via `-p`.
+
+All three adapters enforce the same invariant: **no writes outside the directories crossagent explicitly hands to the agent** (workflow dir, repo, global/project memory, and any configured `add_dirs`).
 
 Each adapter constructs launch arguments including:
-- `--add-dir` flags for the workflow directory and additional directories
-- Sandbox settings controlling filesystem write access
-- The prompt file path pointing to the generated phase prompt
+- Workspace directory flags (`--add-dir` for claude/codex, `--include-directories` for gemini) covering the workflow directory, global/project memory, and any extra `add_dirs`
+- Auto-approval / sandbox settings appropriate for the adapter
+- The prompt (file path or inlined content) pointing to the generated phase prompt
 
 Custom agents can be registered via `crossagent agents add` with an adapter type and optional custom command.
 

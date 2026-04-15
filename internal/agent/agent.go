@@ -14,7 +14,7 @@ import (
 // Agent represents a registered agent (builtin or custom).
 type Agent struct {
 	Name        string
-	Adapter     string // "claude" or "codex"
+	Adapter     string // "claude", "codex", or "gemini"
 	Command     string // CLI command to invoke
 	DisplayName string
 	Builtin     bool
@@ -24,9 +24,10 @@ type Agent struct {
 var validAdapters = map[string]bool{
 	"claude": true,
 	"codex":  true,
+	"gemini": true,
 }
 
-// builtinAgents are the hardcoded builtin agents matching bash lines 320-350.
+// builtinAgents are the hardcoded builtin agents.
 var builtinAgents = map[string]*Agent{
 	"claude": {
 		Name:        "claude",
@@ -40,6 +41,13 @@ var builtinAgents = map[string]*Agent{
 		Adapter:     "codex",
 		Command:     "codex",
 		DisplayName: "OpenAI Codex",
+		Builtin:     true,
+	},
+	"gemini": {
+		Name:        "gemini",
+		Adapter:     "gemini",
+		Command:     "gemini",
+		DisplayName: "Google Gemini",
 		Builtin:     true,
 	},
 }
@@ -98,6 +106,7 @@ func ListAgents() ([]Agent, error) {
 	agents := []Agent{
 		*builtinAgents["claude"],
 		*builtinAgents["codex"],
+		*builtinAgents["gemini"],
 	}
 
 	// Read custom agents from agents directory.
@@ -139,7 +148,7 @@ func AddAgent(name, adapter, command, displayName string) error {
 		return fmt.Errorf("cannot overwrite builtin agent '%s'", name)
 	}
 	if !validAdapters[adapter] {
-		return fmt.Errorf("agent adapter must be one of: claude, codex")
+		return fmt.Errorf("agent adapter must be one of: claude, codex, gemini")
 	}
 
 	agentFile := filepath.Join(state.AgentsDir(), name)

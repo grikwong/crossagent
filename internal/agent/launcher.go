@@ -189,6 +189,17 @@ func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string,
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 
+	case "gemini":
+		prompt := "Read and follow the instructions at " + promptFile
+		args := buildGeminiSpawnArgs(launchArgs, prompt)
+
+		cmd := exec.Command(agent.Command, args...)
+		cmd.Dir = repo
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+
 	default:
 		return fmt.Errorf("unsupported agent adapter '%s' for agent '%s'", agent.Adapter, agent.Name)
 	}
@@ -206,15 +217,76 @@ func codexTrustArgs(repo string) []string {
 	}
 }
 
+// codexSandboxArgs pins codex to the "workspace-write" sandbox mode and
+// enumerates the exact directories outside the working tree that crossagent
+// wants writable (global/project memory + any explicit add_dirs extracted
+// from launchArgs). This guarantees codex can only write to directories we
+// explicitly allow, even when the user ran codex with a different default
+// sandbox_mode in their config.
+func codexSandboxArgs(launchArgs []string) []string {
+	dirs := extractAddDirs(launchArgs)
+	quoted := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		quoted = append(quoted, fmt.Sprintf("%q", d))
+	}
+	args := []string{"-c", `sandbox_mode="workspace-write"`}
+	if len(quoted) > 0 {
+		args = append(args,
+			"-c",
+			fmt.Sprintf("sandbox_workspace_write.writable_roots=[%s]", strings.Join(quoted, ",")),
+		)
+	}
+	// Keep network disabled: the sandbox_workspace_write default is
+	// network_access=false, which is what we want for deterministic runs.
+	return args
+}
+
 // buildCodexSpawnArgs returns the full codex argv for a given repo, launch
 // args (e.g. --add-dir pairs), and prompt. Shared by LaunchAgent and
-// BuildPhaseCmd so both execution paths carry the same trust override and
-// ordering guarantees (trust override before any --add-dir, prompt after --).
+// BuildPhaseCmd so both execution paths carry the same trust override,
+// sandbox scope, and ordering guarantees (overrides before any --add-dir,
+// prompt after --).
 func buildCodexSpawnArgs(repo string, launchArgs []string, promptText string) []string {
 	args := []string{"--full-auto", "-C", repo}
 	args = append(args, codexTrustArgs(repo)...)
+	args = append(args, codexSandboxArgs(launchArgs)...)
 	args = append(args, launchArgs...)
 	args = append(args, "--", promptText)
+	return args
+}
+
+// extractAddDirs returns the directory values from a launchArgs slice of
+// alternating "--add-dir" flags and paths. Used by adapters whose native
+// CLI does not accept repeated --add-dir flags.
+func extractAddDirs(launchArgs []string) []string {
+	var dirs []string
+	for i := 0; i+1 < len(launchArgs); i += 2 {
+		if launchArgs[i] == "--add-dir" {
+			dirs = append(dirs, launchArgs[i+1])
+		}
+	}
+	return dirs
+}
+
+// buildGeminiSpawnArgs returns the full gemini argv for a given set of
+// launch args (repeated --add-dir pairs) and prompt. Gemini's flag shape
+// differs from claude/codex:
+//
+//   - --yolo: auto-approve tool calls (analogous to codex --full-auto and
+//     claude --permission-mode auto).
+//   - --sandbox: run the agent under an OS-level sandbox (sandbox-exec on
+//     macOS, Docker/Podman on Linux) so filesystem writes are confined to
+//     the project dir + --include-directories. Required to satisfy the
+//     "sandbox mode limited to directories explicitly given" guarantee.
+//   - --include-directories: comma-separated list of additional workspace
+//     roots (gemini does not accept repeated --add-dir flags).
+//   - -p: the bootstrap prompt.
+func buildGeminiSpawnArgs(launchArgs []string, promptText string) []string {
+	args := []string{"--yolo", "--sandbox"}
+	if dirs := extractAddDirs(launchArgs); len(dirs) > 0 {
+		args = append(args, "--include-directories", strings.Join(dirs, ","))
+	}
+	args = append(args, "-p", promptText)
 	return args
 }
 
@@ -350,7 +422,8 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 	launchArgs := BuildLaunchArgs(wfDir, cfg.AddDirs, projectMemDir)
 	var spawnArgs []string
 
-	if agent.Adapter == "claude" {
+	switch agent.Adapter {
+	case "claude":
 		settingsFile, err := GenSandboxSettings(wfDir, cfg.Repo, cfg.AddDirs, projectMemDir)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate sandbox settings: %w", err)
@@ -358,8 +431,10 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 		spawnArgs = append(spawnArgs, "--permission-mode", "auto", "--settings", settingsFile)
 		spawnArgs = append(spawnArgs, launchArgs...)
 		spawnArgs = append(spawnArgs, "--", promptText)
-	} else if agent.Adapter == "codex" {
+	case "codex":
 		spawnArgs = buildCodexSpawnArgs(cfg.Repo, launchArgs, promptText)
+	case "gemini":
+		spawnArgs = buildGeminiSpawnArgs(launchArgs, promptText)
 	}
 
 	phaseID := fmt.Sprintf("%d", targetPhase)

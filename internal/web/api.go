@@ -775,8 +775,8 @@ func handleAgentsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "Invalid agent name")
 		return
 	}
-	if adapter != "claude" && adapter != "codex" {
-		writeError(w, 400, "Agent adapter must be one of: claude, codex")
+	if adapter != "claude" && adapter != "codex" && adapter != "gemini" {
+		writeError(w, 400, "Agent adapter must be one of: claude, codex, gemini")
 		return
 	}
 

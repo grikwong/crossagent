@@ -170,11 +170,11 @@ crossagent memory edit [--global|--project [name]]
 
 ### Agents
 
-Ships with builtin `claude` and `codex` agents. Register custom agents and reassign phases:
+Ships with builtin `claude`, `codex`, and `gemini` agents. Register custom agents and reassign phases:
 
 ```bash
 crossagent agents list [--json]
-crossagent agents add <name> --adapter <claude|codex> [--command <cmd>] [--display-name <name>]
+crossagent agents add <name> --adapter <claude|codex|gemini> [--command <cmd>] [--display-name <name>]
 crossagent agents remove <name>
 crossagent agents show [--workflow <name>] [--json]
 crossagent agents assign <phase> <agent> [--workflow <name>]
@@ -182,13 +182,15 @@ crossagent agents reset <phase> [--workflow <name>]
 crossagent agents autoselect [--workflow <name>] [--json]
 ```
 
-Adapters are constrained to `claude` or `codex` — the two supported CLI
-protocols. To use a different backend (e.g. Gemini), register a custom
-agent whose `--command` points at that binary while reusing one of the
-two adapters:
+Adapters are constrained to `claude`, `codex`, or `gemini` — the three
+supported CLI protocols (each encodes a different set of flag
+conventions, sandbox controls, and prompt-passing mechanics). Pick the
+adapter that matches the binary you're wiring up. Custom agents can
+override the binary path via `--command` (for example to run a specific
+Gemini binary name):
 
 ```bash
-crossagent agents add gemini-pro --adapter claude --command gemini --display-name "Gemini Pro"
+crossagent agents add gemini-pro --adapter gemini --command gemini --display-name "Gemini Pro"
 crossagent agents assign plan gemini-pro
 ```
 
@@ -205,8 +207,13 @@ and display name):
 | implement | `claude` → `codex` → first                |
 | verify    | `gemini` → `codex` → `claude` → first     |
 
-With only the two builtin agents installed the heuristic is a no-op
-(plan/implement stay on `claude`, review/verify stay on `codex`).
+With only the builtin agents installed, the heuristic picks `gemini` for
+`plan` and `verify` (since a `gemini` builtin is now registered), while
+`implement` stays on `claude` and `review` stays on `codex`. If the
+`gemini` binary isn't installed on `PATH`, launching those phases will
+surface a "command not found" error — reassign with `agents assign` or
+remove the `gemini` builtin expectation by picking an explicit agent per
+phase.
 
 #### Managing models in the Web UI
 
