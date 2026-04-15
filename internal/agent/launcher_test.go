@@ -471,6 +471,157 @@ func TestBuildPhaseCmdJSONParity(t *testing.T) {
 	}
 }
 
+func TestCodexTrustArgs(t *testing.T) {
+	repo := "/Users/test/repo"
+	got := codexTrustArgs(repo)
+
+	if len(got) != 2 {
+		t.Fatalf("codexTrustArgs should return 2 args, got %d: %v", len(got), got)
+	}
+	if got[0] != "-c" {
+		t.Errorf("codexTrustArgs[0] = %q, want %q", got[0], "-c")
+	}
+	want := `projects."/Users/test/repo".trust_level="trusted"`
+	if got[1] != want {
+		t.Errorf("codexTrustArgs[1] = %q, want %q", got[1], want)
+	}
+}
+
+func TestCodexTrustArgsWithSpaces(t *testing.T) {
+	// Repo paths with spaces must survive the %q escape as a valid TOML key segment.
+	repo := "/Users/test/my repo"
+	got := codexTrustArgs(repo)
+	want := `projects."/Users/test/my repo".trust_level="trusted"`
+	if got[1] != want {
+		t.Errorf("codexTrustArgs[1] = %q, want %q", got[1], want)
+	}
+}
+
+func TestBuildCodexSpawnArgsOrdering(t *testing.T) {
+	// The shared codex argv builder is used by both LaunchAgent and
+	// BuildPhaseCmd, so this test guards the ordering contract for both.
+	repo := "/tmp/repo"
+	launchArgs := []string{"--add-dir", "/tmp/wf", "--add-dir", "/tmp/mem"}
+	prompt := "do the thing"
+
+	args := buildCodexSpawnArgs(repo, launchArgs, prompt)
+
+	// Expected shape:
+	//   --full-auto -C <repo> -c <trust-override> --add-dir ... -- <prompt>
+	wantPrefix := []string{
+		"--full-auto", "-C", repo,
+		"-c", `projects."/tmp/repo".trust_level="trusted"`,
+		"--add-dir", "/tmp/wf", "--add-dir", "/tmp/mem",
+		"--", prompt,
+	}
+	if len(args) != len(wantPrefix) {
+		t.Fatalf("len mismatch: got %d want %d: %v", len(args), len(wantPrefix), args)
+	}
+	for i, w := range wantPrefix {
+		if args[i] != w {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], w)
+		}
+	}
+
+	// Explicitly assert the trust-override comes AFTER -C <repo> and BEFORE
+	// any --add-dir, because losing that ordering would regress the fix.
+	trustIdx := -1
+	addDirIdx := -1
+	for i, a := range args {
+		if a == "-c" && trustIdx == -1 {
+			trustIdx = i
+		}
+		if a == "--add-dir" && addDirIdx == -1 {
+			addDirIdx = i
+		}
+	}
+	if trustIdx != 3 {
+		t.Errorf("trust -c should be at index 3 (after --full-auto -C <repo>), got %d", trustIdx)
+	}
+	if addDirIdx == -1 || addDirIdx < trustIdx {
+		t.Errorf("--add-dir should appear after -c trust override; addDirIdx=%d trustIdx=%d", addDirIdx, trustIdx)
+	}
+}
+
+func TestBuildPhaseCmdCodexAdapterIncludesTrustOverride(t *testing.T) {
+	// Integration check: BuildPhaseCmd for a codex-assigned phase emits the
+	// trust override. Guards the Web UI / phase-cmd --json launch path.
+	home := setupTestHome(t)
+
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755)
+	os.WriteFile(filepath.Join(wfDir, "phase"), []byte("1\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "config"), []byte("repo=/tmp/repo\nproject=default\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "description"), []byte("Test feature\n"), 0644)
+
+	state.InitGlobalMemory()
+	state.InitProjectMemory("default")
+
+	if err := SetPhaseAgent(wfDir, "plan", "codex"); err != nil {
+		t.Fatalf("SetPhaseAgent: %v", err)
+	}
+
+	result, err := BuildPhaseCmd(wfDir, "test-wf", "plan", false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantTrust := `projects."/tmp/repo".trust_level="trusted"`
+	var trustIdx, repoIdx, addDirIdx, dashIdx = -1, -1, -1, -1
+	for i, a := range result.Args {
+		switch {
+		case a == "-C" && repoIdx == -1:
+			repoIdx = i
+		case a == wantTrust && trustIdx == -1:
+			trustIdx = i
+		case a == "--add-dir" && addDirIdx == -1:
+			addDirIdx = i
+		case a == "--" && dashIdx == -1:
+			dashIdx = i
+		}
+	}
+	if trustIdx == -1 {
+		t.Fatalf("codex Args missing trust override %q; got %v", wantTrust, result.Args)
+	}
+	if repoIdx == -1 || trustIdx < repoIdx {
+		t.Errorf("trust override should come after -C <repo>; repoIdx=%d trustIdx=%d", repoIdx, trustIdx)
+	}
+	if addDirIdx != -1 && addDirIdx < trustIdx {
+		t.Errorf("trust override should come before --add-dir; addDirIdx=%d trustIdx=%d", addDirIdx, trustIdx)
+	}
+	if dashIdx == -1 || dashIdx < trustIdx {
+		t.Errorf("trust override should come before --; dashIdx=%d trustIdx=%d", dashIdx, trustIdx)
+	}
+}
+
+func TestBuildPhaseCmdClaudeAdapterOmitsTrustOverride(t *testing.T) {
+	// The trust override is codex-only; claude argv must not carry it.
+	home := setupTestHome(t)
+
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755)
+	os.WriteFile(filepath.Join(wfDir, "phase"), []byte("1\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "config"), []byte("repo=/tmp/repo\nproject=default\n"), 0644)
+	os.WriteFile(filepath.Join(wfDir, "description"), []byte("Test feature\n"), 0644)
+
+	state.InitGlobalMemory()
+	state.InitProjectMemory("default")
+
+	result, err := BuildPhaseCmd(wfDir, "test-wf", "plan", false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Agent.Adapter != "claude" {
+		t.Fatalf("default plan agent should be claude, got %q", result.Agent.Adapter)
+	}
+	for _, a := range result.Args {
+		if strings.Contains(a, "trust_level") {
+			t.Errorf("claude Args must not contain trust_level override: %v", result.Args)
+			break
+		}
+	}
+}
+
 func TestBuildPhaseCmdForce(t *testing.T) {
 	home := setupTestHome(t)
 

@@ -181,9 +181,7 @@ func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string,
 			return err
 		}
 
-		args := []string{"--full-auto", "-C", repo}
-		args = append(args, launchArgs...)
-		args = append(args, "--", prompt)
+		args := buildCodexSpawnArgs(repo, launchArgs, prompt)
 
 		cmd := exec.Command(agent.Command, args...)
 		cmd.Stdin = os.Stdin
@@ -194,6 +192,30 @@ func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string,
 	default:
 		return fmt.Errorf("unsupported agent adapter '%s' for agent '%s'", agent.Adapter, agent.Name)
 	}
+}
+
+// codexTrustArgs returns the -c override that pre-trusts the codex working
+// directory, so codex never prompts "Do you trust this folder?" during an
+// unattended workflow run. The repo path is TOML-escaped via %q, and
+// ValidatePath rejects repo paths containing characters (quotes, backslashes)
+// that would break that escape.
+func codexTrustArgs(repo string) []string {
+	return []string{
+		"-c",
+		fmt.Sprintf(`projects.%q.trust_level="trusted"`, repo),
+	}
+}
+
+// buildCodexSpawnArgs returns the full codex argv for a given repo, launch
+// args (e.g. --add-dir pairs), and prompt. Shared by LaunchAgent and
+// BuildPhaseCmd so both execution paths carry the same trust override and
+// ordering guarantees (trust override before any --add-dir, prompt after --).
+func buildCodexSpawnArgs(repo string, launchArgs []string, promptText string) []string {
+	args := []string{"--full-auto", "-C", repo}
+	args = append(args, codexTrustArgs(repo)...)
+	args = append(args, launchArgs...)
+	args = append(args, "--", promptText)
+	return args
 }
 
 // buildCodexPrompt reads the general and phase prompt files, concatenating them for Codex.
@@ -334,11 +356,11 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 			return nil, fmt.Errorf("failed to generate sandbox settings: %w", err)
 		}
 		spawnArgs = append(spawnArgs, "--permission-mode", "auto", "--settings", settingsFile)
+		spawnArgs = append(spawnArgs, launchArgs...)
+		spawnArgs = append(spawnArgs, "--", promptText)
 	} else if agent.Adapter == "codex" {
-		spawnArgs = append(spawnArgs, "--full-auto", "-C", cfg.Repo)
+		spawnArgs = buildCodexSpawnArgs(cfg.Repo, launchArgs, promptText)
 	}
-	spawnArgs = append(spawnArgs, launchArgs...)
-	spawnArgs = append(spawnArgs, "--", promptText)
 
 	phaseID := fmt.Sprintf("%d", targetPhase)
 

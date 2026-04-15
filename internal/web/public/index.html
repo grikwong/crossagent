@@ -45,9 +45,14 @@
     <div class="content">
       <!-- Sidebar -->
       <aside class="sidebar">
+        <!-- Round Bar (visible only for followup workflows) -->
+        <div id="round-bar" class="round-bar hidden">
+          <span id="round-bar-label" class="round-bar-label" data-tooltip=""></span>
+          <select id="round-select" class="round-select round-select--compact" aria-label="Select round"></select>
+        </div>
         <!-- Phase Tracker -->
         <div class="panel">
-          <div class="panel-header panel-header--phases">
+          <div class="panel-header">
             <span>Phases</span>
             <button id="phase-settings-btn" class="btn-icon" data-tooltip="Configure models for each phase" aria-label="Phase model settings">&#9881;</button>
           </div>
@@ -92,7 +97,6 @@
         <div class="panel">
           <div class="panel-header">
             <span>Artifacts</span>
-            <select id="round-select" class="round-select hidden" aria-label="Select round"></select>
           </div>
           <div id="artifact-list" class="artifact-list">
             <div class="artifact-item" data-artifact="plan">

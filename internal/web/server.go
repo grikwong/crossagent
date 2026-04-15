@@ -102,6 +102,11 @@ func NewMux(sm *SessionManager) *http.ServeMux {
 	// Sessions
 	mux.HandleFunc("GET /api/sessions", handleSessions(sm))
 
+	// Agents (model management)
+	mux.HandleFunc("GET /api/agents", handleAgentsList)
+	mux.HandleFunc("POST /api/agents", handleAgentsCreate)
+	mux.HandleFunc("DELETE /api/agents/{name}", handleAgentsDelete)
+
 	// ── Workflow-scoped routes ──────────────────────────────────────────
 	// These eliminate dependence on the global ~/.crossagent/current file,
 	// enabling multiple browsers to operate on different workflows safely.
@@ -118,6 +123,11 @@ func NewMux(sm *SessionManager) *http.ServeMux {
 	mux.HandleFunc("GET /api/workflow/{name}/chat-history/{phase}/stream", handleWorkflowChatHistoryStream)
 	mux.HandleFunc("POST /api/workflow/{name}/repos/add", handleWorkflowReposAdd)
 	mux.HandleFunc("POST /api/workflow/{name}/repos/remove", handleWorkflowReposRemove)
+
+	// Workflow-scoped agent assignments
+	mux.HandleFunc("GET /api/workflow/{name}/agents", handleWorkflowAgentsGet)
+	mux.HandleFunc("POST /api/workflow/{name}/agents", handleWorkflowAgentsSet)
+	mux.HandleFunc("POST /api/workflow/{name}/agents/autoselect", handleWorkflowAgentsAutoselect)
 
 	// Followup & round history
 	mux.HandleFunc("POST /api/followup", handleFollowup)

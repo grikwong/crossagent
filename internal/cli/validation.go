@@ -48,6 +48,11 @@ func ValidatePath(path string) (string, error) {
 	if strings.Contains(path, ",") {
 		return "", fmt.Errorf("path cannot contain commas: %s", path)
 	}
+	// Double quotes and backslashes would break the codex trust-override key
+	// (projects."<path>".trust_level="trusted") that the codex launcher emits.
+	if strings.ContainsAny(path, "\"\\") {
+		return "", fmt.Errorf("path cannot contain double-quote or backslash characters: %s", path)
+	}
 
 	absPath, err := filepath.Abs(path)
 	if err != nil {

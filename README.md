@@ -179,7 +179,45 @@ crossagent agents remove <name>
 crossagent agents show [--workflow <name>] [--json]
 crossagent agents assign <phase> <agent> [--workflow <name>]
 crossagent agents reset <phase> [--workflow <name>]
+crossagent agents autoselect [--workflow <name>] [--json]
 ```
+
+Adapters are constrained to `claude` or `codex` — the two supported CLI
+protocols. To use a different backend (e.g. Gemini), register a custom
+agent whose `--command` points at that binary while reusing one of the
+two adapters:
+
+```bash
+crossagent agents add gemini-pro --adapter claude --command gemini --display-name "Gemini Pro"
+crossagent agents assign plan gemini-pro
+```
+
+#### Auto-select heuristic
+
+`agents autoselect` picks an agent for each phase of a workflow based on
+the currently registered agents (case-insensitive substring match on name
+and display name):
+
+| Phase     | Preference order                          |
+|-----------|-------------------------------------------|
+| plan      | `gemini` → `claude` → `codex` → first     |
+| review    | `codex`/`gpt` → `claude` → first          |
+| implement | `claude` → `codex` → first                |
+| verify    | `gemini` → `codex` → `claude` → first     |
+
+With only the two builtin agents installed the heuristic is a no-op
+(plan/implement stay on `claude`, review/verify stay on `codex`).
+
+#### Managing models in the Web UI
+
+The Web UI exposes the same controls:
+
+- **Models** button in the top bar opens a modal for listing, adding, and
+  deleting agents (builtins cannot be deleted).
+- The ⚙ gear in the sidebar **Phases** header opens the same modal
+  scrolled to per-phase assignment dropdowns for the active workflow.
+- The ✨ **Auto-select** button inside the modal runs
+  `agents autoselect` for the active workflow.
 
 ### Navigation and automation
 

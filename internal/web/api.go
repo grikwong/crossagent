@@ -750,6 +750,132 @@ func handleReposRemove(w http.ResponseWriter, r *http.Request) {
 // These handlers accept a workflow name in the URL path and pass --workflow
 // to the CLI, avoiding dependence on the global ~/.crossagent/current file.
 
+// ── Agents handlers ─────────────────────────────────────────────────────────
+
+// GET /api/agents
+func handleAgentsList(w http.ResponseWriter, r *http.Request) {
+	out, err := runCLI("agents", "list", "--json")
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/agents
+// Body: {name, adapter, command, displayName}
+func handleAgentsCreate(w http.ResponseWriter, r *http.Request) {
+	body := readBody(r)
+	name := bodyStr(body, "name")
+	adapter := bodyStr(body, "adapter")
+	command := bodyStr(body, "command")
+	displayName := bodyStr(body, "displayName")
+
+	if !validateName(name) {
+		writeError(w, 400, "Invalid agent name")
+		return
+	}
+	if adapter != "claude" && adapter != "codex" {
+		writeError(w, 400, "Agent adapter must be one of: claude, codex")
+		return
+	}
+
+	args := []string{"agents", "add", name, "--adapter", adapter}
+	if command != "" {
+		args = append(args, "--command", command)
+	}
+	if displayName != "" {
+		args = append(args, "--display-name", displayName)
+	}
+	if _, err := runCLI(args...); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := runCLI("agents", "list", "--json")
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// DELETE /api/agents/{name}
+func handleAgentsDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !validateName(name) {
+		writeError(w, 400, "Invalid agent name")
+		return
+	}
+	if _, err := runCLI("agents", "remove", name); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := runCLI("agents", "list", "--json")
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// GET /api/workflow/{name}/agents
+func handleWorkflowAgentsGet(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	out, err := runCLI("agents", "show", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/agents
+// Body: {phase, agent}
+func handleWorkflowAgentsSet(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	phase := bodyStr(body, "phase")
+	agentName := bodyStr(body, "agent")
+	if !validPhases[phase] {
+		writeError(w, 400, "Invalid phase")
+		return
+	}
+	if !validateName(agentName) {
+		writeError(w, 400, "Invalid agent name")
+		return
+	}
+	if _, err := runCLI("agents", "assign", phase, agentName, "--workflow", name); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	out, err := runCLI("agents", "show", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
+// POST /api/workflow/{name}/agents/autoselect
+func handleWorkflowAgentsAutoselect(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	out, err := runCLI("agents", "autoselect", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
 // requireWorkflowName extracts and validates the {name} path parameter.
 func requireWorkflowName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name := r.PathValue("name")

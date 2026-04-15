@@ -1193,6 +1193,8 @@ func cmdAgents(args []string) {
 		cmdAgentsAssign(args)
 	case "reset":
 		cmdAgentsReset(args)
+	case "autoselect":
+		cmdAgentsAutoselect(args)
 	case "help", "--help", "-h":
 		fmt.Println(`Usage:
   crossagent agents list [--json]
@@ -1200,7 +1202,8 @@ func cmdAgents(args []string) {
   crossagent agents remove <name>
   crossagent agents show [--workflow <name>] [--json]
   crossagent agents assign <plan|review|implement|verify> <agent> [--workflow <name>]
-  crossagent agents reset <plan|review|implement|verify> [--workflow <name>]`)
+  crossagent agents reset <plan|review|implement|verify> [--workflow <name>]
+  crossagent agents autoselect [--workflow <name>] [--json]`)
 	default:
 		die(fmt.Sprintf("Unknown agents command: %s. Run 'crossagent agents help'.", subcmd))
 	}
@@ -1499,6 +1502,79 @@ func cmdAgentsReset(args []string) {
 	}
 	defaultAgent := agent.DefaultPhaseAgent(phaseKey)
 	success(fmt.Sprintf("Reset %s agent for workflow '%s' to default (%s).", phaseKey, workflow, defaultAgent))
+}
+
+func cmdAgentsAutoselect(args []string) {
+	jsonMode := false
+	workflow := ""
+
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "--json":
+			jsonMode = true
+			i++
+		case "--workflow":
+			requireArg(args, i)
+			workflow = args[i+1]
+			i += 2
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				die(fmt.Sprintf("Unknown option: %s", args[i]))
+			}
+			die(fmt.Sprintf("Unexpected argument: %s", args[i]))
+		}
+	}
+
+	if workflow == "" {
+		name, _, err := cli.RequireWorkflow()
+		if err != nil {
+			die(err.Error())
+		}
+		workflow = name
+	}
+
+	d := state.WorkflowDir(workflow)
+	if _, err := os.Stat(d); os.IsNotExist(err) {
+		die(fmt.Sprintf("Workflow '%s' not found.", workflow))
+	}
+
+	assignments, err := agent.AutoSelectAll(d)
+	if err != nil {
+		die(err.Error())
+	}
+
+	for _, phase := range []string{"plan", "review", "implement", "verify"} {
+		if name := assignments[phase]; name != "" {
+			if err := agent.SetPhaseAgent(d, phase, name); err != nil {
+				die(err.Error())
+			}
+		}
+	}
+
+	if jsonMode {
+		out := cli.AgentsShowJSON{
+			Workflow: workflow,
+			Agents: cli.OrderedAgentNames{
+				Plan:      assignments["plan"],
+				Review:    assignments["review"],
+				Implement: assignments["implement"],
+				Verify:    assignments["verify"],
+			},
+		}
+		if err := cli.PrintJSONCompact(out); err != nil {
+			die(err.Error())
+		}
+		return
+	}
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "  %sAuto-selected agents for workflow: %s%s\n", BOLD, workflow, NC)
+	separator()
+	for _, phase := range []string{"plan", "review", "implement", "verify"} {
+		fmt.Fprintf(os.Stderr, "  %-10s %s\n", phase+":", assignments[phase])
+	}
+	fmt.Fprintln(os.Stderr)
 }
 
 // ── Repos Subcommands ───────────────────────────────────────────────────────

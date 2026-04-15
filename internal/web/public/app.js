@@ -58,8 +58,7 @@ async function fetchStatus() {
     }
     state = data;
     renderStatus();
-    renderArtifactList();
-    renderPhaseTracker();
+    renderRoundScopedSidebar();
     renderDirectories();
     renderInfo();
     updateRunButton();
@@ -461,6 +460,21 @@ function renderNoWorkflow() {
   const btn = document.getElementById('run-phase-btn');
   btn.textContent = 'Run Next Phase';
   btn.disabled = true;
+  // Clear round-scope UI — a cleared workflow must not leave a stale Round bar behind.
+  selectedRound = null;
+  const roundBar = document.getElementById('round-bar');
+  const roundBarLabel = document.getElementById('round-bar-label');
+  const roundSel = document.getElementById('round-select');
+  if (roundBar) roundBar.classList.add('hidden');
+  if (roundBarLabel) {
+    roundBarLabel.textContent = '';
+    roundBarLabel.setAttribute('data-tooltip', '');
+  }
+  if (roundSel) {
+    roundSel.innerHTML = '';
+    roundSel.value = '';
+    roundSel.classList.add('hidden');
+  }
   setGuide('Create or select a workflow to get started.');
 }
 
@@ -716,27 +730,6 @@ function renderPhaseTracker() {
       toolEl.textContent = state.agents[key].display_name || state.agents[key].name;
     }
   });
-
-  // Show round indicator in phase header
-  const phaseHeader = document.querySelector('#phase-tracker').closest('.panel').querySelector('.panel-header');
-  if (state.followup_round > 0) {
-    const currentRound = viewingRound ? selectedRound : state.followup_round + 1;
-    const label = viewingRound ? `Round ${currentRound}` : `Round ${currentRound}`;
-    if (!phaseHeader.querySelector('.round-indicator')) {
-      const span = document.createElement('span');
-      span.className = 'round-indicator';
-      const gear = phaseHeader.querySelector('#phase-settings-btn');
-      if (gear) {
-        phaseHeader.insertBefore(span, gear);
-      } else {
-        phaseHeader.appendChild(span);
-      }
-    }
-    phaseHeader.querySelector('.round-indicator').textContent = label;
-  } else {
-    const indicator = phaseHeader.querySelector('.round-indicator');
-    if (indicator) indicator.remove();
-  }
 }
 
 function renderArtifactList() {
@@ -899,6 +892,36 @@ function renderRoundSelector() {
   if (currentValue && parseInt(currentValue, 10) <= state.followup_round) {
     sel.value = currentValue;
   }
+}
+
+function renderRoundBar() {
+  const bar = document.getElementById('round-bar');
+  const labelEl = document.getElementById('round-bar-label');
+  if (!bar || !labelEl) return;
+  if (!state || !state.followup_round || state.followup_round === 0) {
+    bar.classList.add('hidden');
+    labelEl.textContent = '';
+    labelEl.setAttribute('data-tooltip', '');
+    return;
+  }
+  bar.classList.remove('hidden');
+  const totalRounds = state.followup_round + 1;
+  const viewingRound = selectedRound !== null;
+  const currentRound = viewingRound ? selectedRound : totalRounds;
+  labelEl.textContent = `R${currentRound}`;
+  labelEl.setAttribute(
+    'data-tooltip',
+    `Round ${currentRound} of ${totalRounds}${viewingRound ? ' (archived)' : ' (current)'}`
+  );
+}
+
+// Re-render every sidebar surface whose content depends on the current
+// selectedRound. Keeps Round bar, phase tracker, and artifact list in sync
+// whenever the user switches rounds.
+function renderRoundScopedSidebar() {
+  renderRoundBar();
+  renderPhaseTracker();
+  renderArtifactList();
 }
 
 // ── Followup ───────────────────────────────────────────────────────────────
@@ -1960,6 +1983,7 @@ async function switchWorkflow(name) {
     state.name = name;
     retryLoopActive = false;
     activeArtifact = null;
+    selectedRound = null;
 
     // Clear stale session state so tryReattachSession() doesn't bind the
     // terminal to the previous workflow's PTY.
@@ -2242,11 +2266,13 @@ function bindEvents() {
   document.getElementById('done-btn').addEventListener('click', markDone);
   document.getElementById('followup-btn').addEventListener('click', handleFollowup);
 
-  // Round selector — switch between current and archived rounds
+  // Round selector — switch between current and archived rounds. Must rerender
+  // every round-scoped sidebar surface (Round bar, phase tracker, artifacts)
+  // so the UI does not end up half-archived / half-current.
   document.getElementById('round-select').addEventListener('change', (e) => {
     const val = e.target.value;
     selectedRound = val ? parseInt(val, 10) : null;
-    renderArtifactList();
+    renderRoundScopedSidebar();
     // Load first available artifact in the selected round
     if (activeArtifact) loadArtifact(activeArtifact);
   });
