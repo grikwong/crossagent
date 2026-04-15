@@ -312,6 +312,25 @@ body {
 }
 .btn-icon:hover { color: var(--accent); }
 
+#phase-settings-btn,
+#add-dir-btn {
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+  border-radius: 4px;
+  padding: 2px 6px;
+  line-height: 1;
+  transition: box-shadow 120ms ease, background 120ms ease;
+}
+#phase-settings-btn:hover,
+#add-dir-btn:hover,
+#phase-settings-btn:focus-visible,
+#add-dir-btn:focus-visible {
+  color: var(--yellow);
+  background: rgba(210, 153, 34, 0.08);
+  box-shadow: 0 0 0 2px rgba(210, 153, 34, 0.2);
+  outline: none;
+}
+
 /* ── Workflow Info ────────────────────────────────────────────────────────── */
 
 .workflow-info {
