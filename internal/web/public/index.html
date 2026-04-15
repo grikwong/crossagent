@@ -33,6 +33,7 @@
         </div>
         <button id="new-btn" class="btn btn-sm" aria-label="Create a new workflow" data-tooltip="Create a new workflow — define a task for the AI to work on">+</button>
         <button id="manage-projects-btn" class="btn btn-sm" data-tooltip="Create and manage projects to organize your workflows">Projects</button>
+        <button id="manage-agents-btn" class="btn btn-sm" data-tooltip="Add, remove, and configure CLI agents">Models</button>
       </div>
       <div class="topbar-right">
         <button id="tour-btn" class="btn btn-sm" data-tooltip="Replay the guided tour" aria-label="Help">?</button>
@@ -46,24 +47,27 @@
       <aside class="sidebar">
         <!-- Phase Tracker -->
         <div class="panel">
-          <div class="panel-header">Phases</div>
+          <div class="panel-header panel-header--phases">
+            <span>Phases</span>
+            <button id="phase-settings-btn" class="btn-icon" data-tooltip="Configure models for each phase" aria-label="Phase model settings">&#9881;</button>
+          </div>
           <div id="phase-tracker" class="phase-tracker">
-            <div class="phase-item" data-phase="1" data-tooltip="Click to view chat history when completed">
+            <div class="phase-item" data-phase="1" data-phase-key="plan" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">1. Plan</span>
               <span class="phase-tool">Claude</span>
             </div>
-            <div class="phase-item" data-phase="2" data-tooltip="Click to view chat history when completed">
+            <div class="phase-item" data-phase="2" data-phase-key="review" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">2. Review</span>
               <span class="phase-tool">Codex</span>
             </div>
-            <div class="phase-item" data-phase="3" data-tooltip="Click to view chat history when completed">
+            <div class="phase-item" data-phase="3" data-phase-key="implement" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">3. Implement</span>
               <span class="phase-tool">Claude</span>
             </div>
-            <div class="phase-item" data-phase="4" data-tooltip="Click to view chat history when completed">
+            <div class="phase-item" data-phase="4" data-phase-key="verify" data-tooltip="Click to view chat history when completed">
               <span class="phase-icon"></span>
               <span class="phase-label">4. Verify</span>
               <span class="phase-tool">Codex</span>
@@ -226,6 +230,58 @@
       <div class="modal-actions">
         <button id="projects-close" class="btn btn-sm">Close</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Manage Models (Agents) Modal -->
+  <div id="agents-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content modal-wide">
+      <h2>Manage Models</h2>
+      <section class="modal-section modal-phase-assignments">
+        <h3>Phase Assignments</h3>
+        <p class="muted">Choose which registered model runs each phase of the current workflow.</p>
+        <div class="modal-phase-grid">
+          <label>1. Plan<select class="modal-phase-agent-select" id="modal-phase-agent-plan" data-phase="plan"></select></label>
+          <label>2. Review<select class="modal-phase-agent-select" id="modal-phase-agent-review" data-phase="review"></select></label>
+          <label>3. Implement<select class="modal-phase-agent-select" id="modal-phase-agent-implement" data-phase="implement"></select></label>
+          <label>4. Verify<select class="modal-phase-agent-select" id="modal-phase-agent-verify" data-phase="verify"></select></label>
+        </div>
+        <p id="modal-phase-no-workflow" class="muted hidden">Select a workflow to configure phase models.</p>
+        <div class="modal-phase-actions">
+          <button type="button" id="modal-autoselect-btn" class="btn btn-sm" data-tooltip="Auto-select models for all phases based on a heuristic">&#10024; Auto-select</button>
+        </div>
+      </section>
+      <section class="modal-section">
+      <p class="muted">Register custom CLI agents. Adapter must be <code>claude</code> or <code>codex</code>; use <em>Command</em> to point at a different binary (e.g. <code>gemini</code>).</p>
+      <div id="agents-list-wrap">
+        <table id="agents-table" class="agents-table">
+          <thead>
+            <tr><th>Name</th><th>Display Name</th><th>Adapter</th><th>Command</th><th>Kind</th><th></th></tr>
+          </thead>
+          <tbody id="agents-table-body"></tbody>
+        </table>
+      </div>
+      <form id="agents-add-form" class="agents-add-form">
+        <h3>Add Model</h3>
+        <div class="agents-add-grid">
+          <label>Name<input type="text" id="agent-name" placeholder="gemini-pro" required></label>
+          <label>Adapter
+            <select id="agent-adapter">
+              <option value="claude">claude</option>
+              <option value="codex">codex</option>
+            </select>
+          </label>
+          <label>Command<input type="text" id="agent-command" placeholder="gemini"></label>
+          <label>Display Name<input type="text" id="agent-displayname" placeholder="Gemini Pro"></label>
+        </div>
+        <div id="agents-add-error" class="form-error-banner hidden"></div>
+        <div class="modal-actions">
+          <button type="button" id="agents-close" class="btn btn-sm">Close</button>
+          <button type="submit" class="btn btn-primary btn-sm">Add Model</button>
+        </div>
+      </form>
+      </section>
     </div>
   </div>
 

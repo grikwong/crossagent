@@ -125,6 +125,152 @@ function renderProjectSelect(data) {
   }
 }
 
+// ── Agents / model management ───────────────────────────────────────────────
+
+let agentsCache = null;
+
+async function fetchAgents({ force = false } = {}) {
+  if (agentsCache && !force) return agentsCache;
+  try {
+    const data = await api('/agents');
+    agentsCache = data && Array.isArray(data.agents) ? data.agents : [];
+  } catch {
+    agentsCache = [];
+  }
+  return agentsCache;
+}
+
+async function refreshAgentSelects() {
+  const agents = await fetchAgents({ force: true });
+  const assignments = (state && state.agents) || {};
+  document.querySelectorAll('.phase-agent-select, .modal-phase-agent-select').forEach(sel => {
+    const phase = sel.dataset.phase;
+    const current = (assignments[phase] && assignments[phase].name) || '';
+    sel.innerHTML = '';
+    agents.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.name;
+      opt.textContent = a.display_name || a.name;
+      if (a.name === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+}
+
+async function assignPhaseAgent(phase, agentName) {
+  if (!state || !state.name) return;
+  try {
+    const res = await api(`/workflow/${encodeURIComponent(state.name)}/agents`, {
+      method: 'POST',
+      body: JSON.stringify({ phase, agent: agentName }),
+    });
+    if (res && res.error) {
+      alert(res.error);
+      return;
+    }
+    await fetchStatus();
+  } catch (err) {
+    alert(err.message || 'Failed to assign agent');
+  }
+}
+
+async function autoSelectAllAgents() {
+  if (!state || !state.name) return;
+  try {
+    const res = await api(`/workflow/${encodeURIComponent(state.name)}/agents/autoselect`, {
+      method: 'POST',
+    });
+    if (res && res.error) {
+      alert(res.error);
+      return;
+    }
+    await fetchStatus();
+  } catch (err) {
+    alert(err.message || 'Auto-select failed');
+  }
+}
+
+async function openAgentsModal() {
+  await fetchAgents({ force: true });
+  renderAgentsTable();
+  await refreshAgentSelects();
+  const noWorkflow = document.getElementById('modal-phase-no-workflow');
+  const hasWorkflow = !!(state && state.name);
+  if (noWorkflow) noWorkflow.classList.toggle('hidden', hasWorkflow);
+  document.querySelectorAll('.modal-phase-agent-select').forEach(sel => {
+    sel.disabled = !hasWorkflow;
+  });
+  const autoBtn = document.getElementById('modal-autoselect-btn');
+  if (autoBtn) autoBtn.disabled = !hasWorkflow;
+  const err = document.getElementById('agents-add-error');
+  if (err) err.classList.add('hidden');
+  document.getElementById('agents-modal').classList.remove('hidden');
+}
+
+function renderAgentsTable() {
+  const tbody = document.getElementById('agents-table-body');
+  if (!tbody) return;
+  const agents = agentsCache || [];
+  tbody.innerHTML = '';
+  agents.forEach(a => {
+    const tr = document.createElement('tr');
+    const disabled = a.builtin ? 'disabled' : '';
+    tr.innerHTML = `
+      <td><code>${esc(a.name)}</code></td>
+      <td>${esc(a.display_name || '')}</td>
+      <td>${esc(a.adapter || '')}</td>
+      <td><code>${esc(a.command || '')}</code></td>
+      <td class="${a.builtin ? 'agent-kind-builtin' : ''}">${a.builtin ? 'builtin' : 'custom'}</td>
+      <td><button class="agent-delete-btn" data-agent="${esc(a.name)}" ${disabled}>Delete</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('.agent-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      const name = btn.dataset.agent;
+      if (!confirm(`Delete agent "${name}"?`)) return;
+      try {
+        const res = await api(`/agents/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (res && res.error) { alert(res.error); return; }
+        agentsCache = Array.isArray(res.agents) ? res.agents : null;
+        renderAgentsTable();
+        await refreshAgentSelects();
+      } catch (err) {
+        alert(err.message || 'Delete failed');
+      }
+    });
+  });
+}
+
+async function submitAgentAdd(e) {
+  e.preventDefault();
+  const name = document.getElementById('agent-name').value.trim();
+  const adapter = document.getElementById('agent-adapter').value;
+  const command = document.getElementById('agent-command').value.trim();
+  const displayName = document.getElementById('agent-displayname').value.trim();
+  const errEl = document.getElementById('agents-add-error');
+  errEl.classList.add('hidden');
+  try {
+    const res = await api('/agents', {
+      method: 'POST',
+      body: JSON.stringify({ name, adapter, command, displayName }),
+    });
+    if (res && res.error) {
+      errEl.textContent = res.error;
+      errEl.classList.remove('hidden');
+      return;
+    }
+    agentsCache = Array.isArray(res.agents) ? res.agents : null;
+    renderAgentsTable();
+    await refreshAgentSelects();
+    document.getElementById('agents-add-form').reset();
+  } catch (err) {
+    errEl.textContent = err.message || 'Failed to add agent';
+    errEl.classList.remove('hidden');
+  }
+}
+
 async function createProject(name) {
   try {
     const data = await api('/projects/new', {
@@ -463,6 +609,7 @@ function renderWorkflowPicker(data) {
   if (filtered.length === 0) {
     list.innerHTML = '<div class="wp-empty">No workflows</div>';
     _pickerWorkflows = [];
+    setWorkflowPickerSelection('');
     return;
   }
 
@@ -519,19 +666,31 @@ function renderWorkflowPicker(data) {
 
   list.appendChild(frag);
 
-  // Set trigger text to active workflow
+  // Reconcile trigger text with the current filtered list so it never goes stale.
+  // Priority: active workflow > existing selection still in the list > first item.
   const active = filtered.find(wf => wf.active);
   if (active) {
     setWorkflowPickerSelection(active.name);
-  } else if (_pickerSelection) {
-    // Keep current selection text if it exists in the list
-    const exists = filtered.find(wf => wf.name === _pickerSelection);
-    if (!exists) setWorkflowPickerSelection('');
+  } else if (_pickerSelection && filtered.some(wf => wf.name === _pickerSelection)) {
+    // Re-apply the selection so the trigger text reflects the currently filtered list
+    // (in case it was previously cleared to "No workflows").
+    setWorkflowPickerSelection(_pickerSelection);
+  } else {
+    // Workflows exist but none active and no valid prior selection — show a
+    // neutral placeholder instead of the stale "No workflows" or a foreign name.
+    _pickerSelection = '';
+    const textEl = document.getElementById('wp-trigger')?.querySelector('.wp-selected-text');
+    if (textEl) textEl.textContent = 'Select workflow';
+    document.querySelectorAll('#wp-list .wp-option').forEach(el => {
+      el.classList.remove('selected');
+    });
   }
 }
 
 function renderPhaseTracker() {
   if (!state) return;
+  // Populate per-phase agent selects against current assignments. Best-effort.
+  refreshAgentSelects().catch(() => { /* non-fatal */ });
   const pn = state.complete ? 5 : parseInt(state.phase, 10);
   const phaseKeys = ['', 'plan', 'review', 'implement', 'verify'];
 
@@ -566,7 +725,12 @@ function renderPhaseTracker() {
     if (!phaseHeader.querySelector('.round-indicator')) {
       const span = document.createElement('span');
       span.className = 'round-indicator';
-      phaseHeader.appendChild(span);
+      const gear = phaseHeader.querySelector('#phase-settings-btn');
+      if (gear) {
+        phaseHeader.insertBefore(span, gear);
+      } else {
+        phaseHeader.appendChild(span);
+      }
     }
     phaseHeader.querySelector('.round-indicator').textContent = label;
   } else {
@@ -2219,6 +2383,53 @@ function bindEvents() {
     selectedProjectFilter = e.target.value;
     await fetchList();
   });
+
+  // Manage Models (Agents)
+  document.getElementById('manage-agents-btn').addEventListener('click', openAgentsModal);
+  document.getElementById('agents-close').addEventListener('click', () => {
+    document.getElementById('agents-modal').classList.add('hidden');
+  });
+  document.getElementById('agents-add-form').addEventListener('submit', submitAgentAdd);
+
+  // Per-phase agent dropdown (sidebar legacy + modal)
+  document.querySelectorAll('.phase-agent-select, .modal-phase-agent-select').forEach(sel => {
+    sel.addEventListener('change', async (e) => {
+      e.stopPropagation();
+      const phase = sel.dataset.phase;
+      const agentName = sel.value;
+      if (!agentName) return;
+      await assignPhaseAgent(phase, agentName);
+    });
+    // Prevent clicks from bubbling to the phase-item chat-history replay handler.
+    sel.addEventListener('click', (e) => e.stopPropagation());
+  });
+
+  // Phase-settings gear — open the Models modal pre-scrolled to phase assignments.
+  const phaseSettingsBtn = document.getElementById('phase-settings-btn');
+  if (phaseSettingsBtn) {
+    phaseSettingsBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await openAgentsModal();
+    });
+  }
+
+  // Auto-select all models (wand) — modal button, plus legacy sidebar button if present.
+  const modalAutoselectBtn = document.getElementById('modal-autoselect-btn');
+  if (modalAutoselectBtn) {
+    modalAutoselectBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!state || !state.name) { alert('No active workflow'); return; }
+      await autoSelectAllAgents();
+    });
+  }
+  const autoselectAllBtn = document.getElementById('autoselect-all-btn');
+  if (autoselectAllBtn) {
+    autoselectAllBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!state || !state.name) { alert('No active workflow'); return; }
+      await autoSelectAllAgents();
+    });
+  }
 
   // Manage Projects
   document.getElementById('manage-projects-btn').addEventListener('click', async () => {
