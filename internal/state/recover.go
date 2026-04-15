@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -76,7 +77,8 @@ func RecoverMisplacedOutput(wfDir, repo, basename string) (recovered bool, srcPa
 		return false, "", fmt.Errorf("recover %s: copy: %w", basename, err)
 	}
 	if err := os.Remove(candidate); err != nil {
-		return true, candidate, fmt.Errorf("recover %s: remove source: %w", basename, err)
+		os.Remove(expected) // rollback the copy
+		return false, "", fmt.Errorf("recover %s: remove source: %w", basename, err)
 	}
 	return true, candidate, nil
 }
@@ -86,17 +88,16 @@ func RecoverMisplacedOutput(wfDir, repo, basename string) (recovered bool, srcPa
 // in the repo root. Returns the source paths of every recovery that
 // occurred, in the order the artifacts were checked.
 //
-// Errors are aggregated: a failure on one artifact does not stop the
-// sweep — successful moves still happen, and the first error is
-// returned along with whatever was recovered.
+// Errors are aggregated using errors.Join so a failure on one artifact does
+// not hide failures on others.
 func RecoverWorkflowOutputs(wfDir, repo string) (recoveredFrom []string, err error) {
 	for _, name := range RecoverableArtifacts {
 		moved, src, rerr := RecoverMisplacedOutput(wfDir, repo, name)
 		if moved {
 			recoveredFrom = append(recoveredFrom, src)
 		}
-		if rerr != nil && err == nil {
-			err = rerr
+		if rerr != nil {
+			err = errors.Join(err, rerr)
 		}
 	}
 	return recoveredFrom, err

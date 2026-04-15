@@ -54,9 +54,9 @@ func GetPhase(wfDir string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// SetPhase writes the phase to the workflow directory.
+// SetPhase writes the phase to the workflow directory atomically.
 func SetPhase(wfDir, phase string) error {
-	return os.WriteFile(filepath.Join(wfDir, "phase"), []byte(phase+"\n"), 0644)
+	return atomicWrite(filepath.Join(wfDir, "phase"), []byte(phase+"\n"))
 }
 
 // GetDescription reads the workflow description.
@@ -85,9 +85,9 @@ func GetCurrent() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// SetCurrent sets the active workflow name.
+// SetCurrent sets the active workflow name atomically.
 func SetCurrent(name string) error {
-	return os.WriteFile(filepath.Join(Home(), "current"), []byte(name+"\n"), 0644)
+	return atomicWrite(filepath.Join(Home(), "current"), []byte(name+"\n"))
 }
 
 // ListWorkflows returns a list of workflow names sorted to match bash glob ordering.

@@ -119,8 +119,8 @@ func TestGenSandboxSettings(t *testing.T) {
 			t.Error("allowWrite entry should be string")
 			continue
 		}
-		if !strings.HasPrefix(s, "//") {
-			t.Errorf("allowWrite path should start with //, got %q", s)
+		if !strings.HasPrefix(s, "/") {
+			t.Errorf("allowWrite path should start with /, got %q", s)
 		}
 	}
 }

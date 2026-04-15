@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // geminiAdapter implements Adapter for the Google Gemini CLI.
 //
@@ -33,6 +36,11 @@ func (geminiAdapter) Plan(ctx *LaunchContext) (*LaunchPlan, error) {
 
 	args := []string{"--yolo", "--sandbox"}
 	if len(ctx.AllDirs) > 0 {
+		for _, d := range ctx.AllDirs {
+			if strings.Contains(d, ",") {
+				return nil, fmt.Errorf("gemini adapter: directory path cannot contain commas: %q", d)
+			}
+		}
 		args = append(args, "--include-directories", strings.Join(ctx.AllDirs, ","))
 	}
 	args = append(args, "-p", prompt)

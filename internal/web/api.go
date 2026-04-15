@@ -221,12 +221,15 @@ func handleArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wfDir, _ := status["workflow_dir"].(string)
-	if wfDir == "" {
+	wfName, _ := status["name"].(string)
+	if wfDir == "" || wfName == "" {
 		writeError(w, 404, "No active workflow")
 		return
 	}
 
 	filePath := filepath.Join(wfDir, artType+".md")
+	tryRecoverArtifact(wfName, filePath)
+
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		writeError(w, 404, "Artifact not found")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // claudeAdapter implements Adapter for the Claude Code CLI.
@@ -57,9 +58,17 @@ func writeClaudeSandboxSettings(ctx *LaunchContext) (string, error) {
 
 	// Claude's sandbox uses a "/<path>" convention where the leading
 	// slash is part of the token rather than a filesystem root.
-	allowWrite := []string{"/" + ctx.Repo}
+	formatPath := func(p string) string {
+		p = filepath.ToSlash(p)
+		if !strings.HasPrefix(p, "/") {
+			return "/" + p
+		}
+		return p
+	}
+
+	allowWrite := []string{formatPath(ctx.Repo)}
 	for _, d := range ctx.AllDirs {
-		allowWrite = append(allowWrite, "/"+d)
+		allowWrite = append(allowWrite, formatPath(d))
 	}
 
 	settings := map[string]any{

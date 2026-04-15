@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/grikwong/crossagent/internal/state"
 )
@@ -66,21 +67,44 @@ type LaunchPlan struct {
 // access to (workflow dir → global memory → project memory → add_dirs)
 // so every adapter sees a consistent ordered list.
 func NewLaunchContext(repo, wfDir, promptFile string, addDirs []string, projectMemDir string) *LaunchContext {
-	dirs := []string{wfDir, state.GlobalMemoryDir()}
+	dirs := []string{}
+	
+	if abs, err := filepath.Abs(wfDir); err == nil {
+		dirs = append(dirs, abs)
+	}
+	if abs, err := filepath.Abs(state.GlobalMemoryDir()); err == nil {
+		dirs = append(dirs, abs)
+	}
+
 	if projectMemDir != "" {
 		if info, err := os.Stat(projectMemDir); err == nil && info.IsDir() {
-			dirs = append(dirs, projectMemDir)
+			if abs, err := filepath.Abs(projectMemDir); err == nil {
+				dirs = append(dirs, abs)
+			}
 		}
 	}
 	for _, d := range addDirs {
 		if d != "" {
-			dirs = append(dirs, d)
+			if abs, err := filepath.Abs(d); err == nil {
+				dirs = append(dirs, abs)
+			}
 		}
 	}
+	
+	absRepo := repo
+	if abs, err := filepath.Abs(repo); err == nil {
+		absRepo = abs
+	}
+	
+	absPrompt := promptFile
+	if abs, err := filepath.Abs(promptFile); err == nil {
+		absPrompt = abs
+	}
+
 	return &LaunchContext{
-		Repo:        repo,
+		Repo:        absRepo,
 		WorkflowDir: wfDir,
-		PromptFile:  promptFile,
+		PromptFile:  absPrompt,
 		AllDirs:     dirs,
 	}
 }
