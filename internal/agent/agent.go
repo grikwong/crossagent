@@ -14,51 +14,43 @@ import (
 // Agent represents a registered agent (builtin or custom).
 type Agent struct {
 	Name        string
-	Adapter     string // "claude", "codex", or "gemini"
+	Adapter     string // one of AdapterNames()
 	Command     string // CLI command to invoke
 	DisplayName string
 	Builtin     bool
 }
 
-// validAdapters are the supported adapter types.
-var validAdapters = map[string]bool{
-	"claude": true,
-	"codex":  true,
-	"gemini": true,
+// builtinAgent returns the builtin agent derived from a registered
+// Adapter. There is exactly one builtin per registered adapter,
+// named after the adapter with adapter=name, command=DefaultCommand,
+// display_name=DisplayName.
+func builtinAgent(adapterName string) (*Agent, bool) {
+	ad, ok := AdapterFor(adapterName)
+	if !ok {
+		return nil, false
+	}
+	return &Agent{
+		Name:        ad.Name(),
+		Adapter:     ad.Name(),
+		Command:     ad.DefaultCommand(),
+		DisplayName: ad.DisplayName(),
+		Builtin:     true,
+	}, true
 }
 
-// builtinAgents are the hardcoded builtin agents.
-var builtinAgents = map[string]*Agent{
-	"claude": {
-		Name:        "claude",
-		Adapter:     "claude",
-		Command:     "claude",
-		DisplayName: "Claude Code",
-		Builtin:     true,
-	},
-	"codex": {
-		Name:        "codex",
-		Adapter:     "codex",
-		Command:     "codex",
-		DisplayName: "OpenAI Codex",
-		Builtin:     true,
-	},
-	"gemini": {
-		Name:        "gemini",
-		Adapter:     "gemini",
-		Command:     "gemini",
-		DisplayName: "Google Gemini",
-		Builtin:     true,
-	},
+// IsBuiltinAgent returns true if name matches a registered adapter
+// (and therefore backs a builtin agent). Used by CLI/Web API guards
+// that refuse to overwrite or remove builtins.
+func IsBuiltinAgent(name string) bool {
+	return ValidAdapter(name)
 }
 
 // GetAgent returns the agent with the given name.
-// Checks builtins first, then custom agents from ~/.crossagent/agents/<name>.
+// Checks builtins (one per registered adapter) first, then custom
+// agents from ~/.crossagent/agents/<name>.
 func GetAgent(name string) (*Agent, error) {
-	if a, ok := builtinAgents[name]; ok {
-		// Return a copy to prevent mutation of the global.
-		copy := *a
-		return &copy, nil
+	if a, ok := builtinAgent(name); ok {
+		return a, nil
 	}
 
 	agentFile := filepath.Join(state.AgentsDir(), name)
@@ -100,13 +92,18 @@ func GetAgent(name string) (*Agent, error) {
 	return agent, nil
 }
 
-// ListAgents returns all agents (builtins first, then custom), sorted by name.
+// ListAgents returns all agents (builtins first in adapter
+// registration order, then custom agents sorted by name).
 func ListAgents() ([]Agent, error) {
-	// Start with builtins in fixed order.
-	agents := []Agent{
-		*builtinAgents["claude"],
-		*builtinAgents["codex"],
-		*builtinAgents["gemini"],
+	// Builtins: one per registered adapter, in registration order.
+	// This removes the need to update a literal slice when adding a
+	// new adapter — adapter files register themselves via init().
+	names := AdapterNames()
+	agents := make([]Agent, 0, len(names))
+	for _, n := range names {
+		if a, ok := builtinAgent(n); ok {
+			agents = append(agents, *a)
+		}
 	}
 
 	// Read custom agents from agents directory.
@@ -144,11 +141,12 @@ func AddAgent(name, adapter, command, displayName string) error {
 	if err := state.ValidateName(name); err != nil {
 		return err
 	}
-	if _, ok := builtinAgents[name]; ok {
+	if IsBuiltinAgent(name) {
 		return fmt.Errorf("cannot overwrite builtin agent '%s'", name)
 	}
-	if !validAdapters[adapter] {
-		return fmt.Errorf("agent adapter must be one of: claude, codex, gemini")
+	if !ValidAdapter(adapter) {
+		return fmt.Errorf("agent adapter must be one of: %s",
+			strings.Join(AdapterNames(), ", "))
 	}
 
 	agentFile := filepath.Join(state.AgentsDir(), name)
@@ -171,7 +169,7 @@ func AddAgent(name, adapter, command, displayName string) error {
 
 // RemoveAgent deletes a custom agent. Refuses to remove builtins.
 func RemoveAgent(name string) error {
-	if _, ok := builtinAgents[name]; ok {
+	if IsBuiltinAgent(name) {
 		return fmt.Errorf("cannot remove builtin agent '%s'", name)
 	}
 

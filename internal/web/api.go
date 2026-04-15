@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/grikwong/crossagent/internal/agent"
 	"github.com/grikwong/crossagent/internal/state"
 )
 
@@ -762,6 +763,29 @@ func handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// GET /api/adapters
+//
+// Returns the list of registered adapters, in registration order:
+// [{name, display_name, default_command}, ...]. Consumed by the Web UI
+// to populate the adapter dropdown without hardcoding names in HTML.
+// Adding a new adapter on the backend automatically surfaces it here.
+func handleAdaptersList(w http.ResponseWriter, r *http.Request) {
+	names := agent.AdapterNames()
+	items := make([]map[string]string, 0, len(names))
+	for _, n := range names {
+		ad, ok := agent.AdapterFor(n)
+		if !ok {
+			continue
+		}
+		items = append(items, map[string]string{
+			"name":            ad.Name(),
+			"display_name":    ad.DisplayName(),
+			"default_command": ad.DefaultCommand(),
+		})
+	}
+	writeJSONObj(w, map[string]any{"adapters": items})
+}
+
 // POST /api/agents
 // Body: {name, adapter, command, displayName}
 func handleAgentsCreate(w http.ResponseWriter, r *http.Request) {
@@ -775,8 +799,9 @@ func handleAgentsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "Invalid agent name")
 		return
 	}
-	if adapter != "claude" && adapter != "codex" && adapter != "gemini" {
-		writeError(w, 400, "Agent adapter must be one of: claude, codex, gemini")
+	if !agent.ValidAdapter(adapter) {
+		writeError(w, 400, fmt.Sprintf("Agent adapter must be one of: %s",
+			strings.Join(agent.AdapterNames(), ", ")))
 		return
 	}
 
@@ -1047,9 +1072,7 @@ func handleWorkflowRevert(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/workflow/{name}/check-file
 func handleWorkflowCheckFile(w http.ResponseWriter, r *http.Request) {
-	// check-file doesn't need workflow scoping itself (it checks an absolute path),
-	// but we provide this route so the frontend consistently uses workflow-scoped URLs.
-	_, ok := requireWorkflowName(w, r)
+	name, ok := requireWorkflowName(w, r)
 	if !ok {
 		return
 	}
@@ -1059,8 +1082,42 @@ func handleWorkflowCheckFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "path required")
 		return
 	}
+
+	// Attempt sandbox-fallback recovery: if the expected file is missing
+	// but a same-named file exists at the repo root (where an OS-sandboxed
+	// agent like gemini would have been forced to write), relocate it into
+	// the workflow directory before reporting existence. This unblocks
+	// auto-advance when --sandbox / seatbelt denies writes outside CWD.
+	recovered, srcPath := tryRecoverArtifact(name, filePath)
+
 	_, err := os.Stat(filePath)
-	writeJSONObj(w, map[string]bool{"exists": err == nil})
+	writeJSONObj(w, map[string]any{
+		"exists":         err == nil,
+		"recovered":      recovered,
+		"recovered_from": srcPath,
+	})
+}
+
+// tryRecoverArtifact runs sandbox-fallback recovery for a single file
+// whose expected path sits inside the named workflow's directory. It
+// returns (recovered, srcPath). If the file is outside the workflow
+// directory, or the basename is not one of the known recoverable
+// artifacts, recovery is skipped and (false, "") is returned.
+func tryRecoverArtifact(workflowName, expectedPath string) (bool, string) {
+	wfDir := state.WorkflowDir(workflowName)
+	// Only attempt recovery for files we expect to live inside the
+	// workflow directory — guards against accidentally moving unrelated
+	// files into the workflow dir.
+	rel, err := filepath.Rel(wfDir, expectedPath)
+	if err != nil || strings.HasPrefix(rel, "..") || rel != filepath.Base(expectedPath) {
+		return false, ""
+	}
+	cfg, err := state.ReadConfig(wfDir)
+	if err != nil || cfg == nil || cfg.Repo == "" {
+		return false, ""
+	}
+	moved, src, _ := state.RecoverMisplacedOutput(wfDir, cfg.Repo, filepath.Base(expectedPath))
+	return moved, src
 }
 
 // POST /api/workflow/{name}/check-advance
@@ -1076,8 +1133,17 @@ func handleWorkflowCheckAdvance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sweep for misplaced artifacts before deciding whether to advance.
+	// Covers the sandboxed-gemini case where writes to the workflow dir
+	// were refused and the artifact landed in the repo root instead.
+	recovered, recoveredFrom := tryRecoverArtifact(name, outputFile)
+
 	if _, err := os.Stat(outputFile); err != nil {
-		writeJSONObj(w, map[string]bool{"advanced": false})
+		writeJSONObj(w, map[string]any{
+			"advanced":       false,
+			"recovered":      recovered,
+			"recovered_from": recoveredFrom,
+		})
 		return
 	}
 
@@ -1096,8 +1162,10 @@ func handleWorkflowCheckAdvance(w http.ResponseWriter, r *http.Request) {
 	var statusData any
 	json.Unmarshal(statusOut, &statusData)
 	writeJSONObj(w, map[string]any{
-		"advanced": true,
-		"status":   statusData,
+		"advanced":       true,
+		"status":         statusData,
+		"recovered":      recovered,
+		"recovered_from": recoveredFrom,
 	})
 }
 

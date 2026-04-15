@@ -104,11 +104,14 @@ func TestListAgents(t *testing.T) {
 		t.Fatalf("ListAgents: %v", err)
 	}
 
-	// Should be: claude, codex, gemini (builtins), then alpha, zebra (custom sorted).
-	if len(agents) != 5 {
-		t.Fatalf("expected 5 agents, got %d", len(agents))
+	// Builtins first (in adapter registration order), then custom agents
+	// sorted alphabetically. Derived from the registry so adding an
+	// adapter doesn't require a hand-updated expected count.
+	builtins := AdapterNames()
+	expected := append(append([]string(nil), builtins...), "alpha", "zebra")
+	if len(agents) != len(expected) {
+		t.Fatalf("expected %d agents, got %d", len(expected), len(agents))
 	}
-	expected := []string{"claude", "codex", "gemini", "alpha", "zebra"}
 	for i, name := range expected {
 		if agents[i].Name != name {
 			t.Errorf("agents[%d].Name = %q, want %q", i, agents[i].Name, name)
@@ -123,8 +126,11 @@ func TestListAgentsNoCustom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
-	if len(agents) != 3 {
-		t.Fatalf("expected 3 agents (builtins only), got %d", len(agents))
+	// Expected count is derived from the registry (one builtin per
+	// registered adapter) so this test doesn't need a manual bump when
+	// a new adapter is added.
+	if want := len(AdapterNames()); len(agents) != want {
+		t.Fatalf("expected %d builtins, got %d", want, len(agents))
 	}
 }
 

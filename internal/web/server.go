@@ -106,6 +106,7 @@ func NewMux(sm *SessionManager) *http.ServeMux {
 	mux.HandleFunc("GET /api/agents", handleAgentsList)
 	mux.HandleFunc("POST /api/agents", handleAgentsCreate)
 	mux.HandleFunc("DELETE /api/agents/{name}", handleAgentsDelete)
+	mux.HandleFunc("GET /api/adapters", handleAdaptersList)
 
 	// ── Workflow-scoped routes ──────────────────────────────────────────
 	// These eliminate dependence on the global ~/.crossagent/current file,

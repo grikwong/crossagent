@@ -189,8 +189,40 @@ async function autoSelectAllAgents() {
   }
 }
 
+// Populate the adapter <select> in the Add Model form from GET
+// /api/adapters. Driven by the backend registry so a new adapter shows
+// up here automatically without a frontend change. Falls back to the
+// currently-selected value if the fetch fails so the form stays usable.
+async function populateAdapterDropdown() {
+  const sel = document.getElementById('agent-adapter');
+  if (!sel) return;
+  try {
+    const res = await api('/adapters');
+    const adapters = (res && res.adapters) || [];
+    if (adapters.length === 0) return;
+    const prev = sel.value;
+    sel.innerHTML = '';
+    adapters.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.name;
+      opt.textContent = a.name;
+      opt.title = a.display_name;
+      sel.appendChild(opt);
+    });
+    if (prev && adapters.some(a => a.name === prev)) {
+      sel.value = prev;
+    }
+  } catch {
+    // Network error — leave whatever options are already in the select
+    // (empty on first load, preserved on subsequent opens).
+  }
+}
+
 async function openAgentsModal() {
-  await fetchAgents({ force: true });
+  await Promise.all([
+    fetchAgents({ force: true }),
+    populateAdapterDropdown(),
+  ]);
   renderAgentsTable();
   await refreshAgentSelects();
   const noWorkflow = document.getElementById('modal-phase-no-workflow');
@@ -1425,6 +1457,14 @@ async function pollForOutput() {
       method: 'POST',
       body: JSON.stringify({ path: pendingOutputFile }),
     });
+    if (result.recovered && result.recovered_from) {
+      // Sandbox denied the agent's write to the workflow dir (seen with
+      // gemini --sandbox). Crossagent moved the artifact from the repo
+      // root for us; let the user know what happened.
+      term.writeln(
+        `\r\n\x1b[33m  Sandbox-fallback: relocated ${result.recovered_from} → workflow dir.\x1b[0m`
+      );
+    }
     if (result.exists) {
       stopOutputPolling();
       await onOutputDetected();
@@ -1478,6 +1518,11 @@ async function onOutputDetected() {
       method: 'POST',
       body: JSON.stringify({ output_file: outputFile }),
     });
+    if (result.recovered && result.recovered_from) {
+      term.writeln(
+        `\x1b[33m  Sandbox-fallback: relocated ${result.recovered_from} into workflow dir.\x1b[0m`
+      );
+    }
     if (result.advanced) {
       term.writeln(`\x1b[32m  Advanced to next phase.\x1b[0m\r\n`);
     }

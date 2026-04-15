@@ -819,6 +819,19 @@ func cmdAdvance(args []string) {
 		return
 	}
 
+	// Sandbox-fallback recovery: OS-level sandboxes (e.g. gemini's
+	// --sandbox / seatbelt profile) can deny writes to the workflow dir
+	// and force the agent to emit its artifact into the repo root
+	// instead. Move any such misplaced artifacts back into the workflow
+	// dir before advancing, so downstream phase-file checks succeed.
+	if cfg, err := state.ReadConfig(d); err == nil && cfg != nil && cfg.Repo != "" {
+		if moved, _ := state.RecoverWorkflowOutputs(d, cfg.Repo); len(moved) > 0 {
+			for _, src := range moved {
+				info(fmt.Sprintf("Recovered sandbox-misplaced artifact: %s → %s", src, d))
+			}
+		}
+	}
+
 	pn := state.PhaseNum(phase)
 	next := pn + 1
 	if next > 4 {
@@ -1198,7 +1211,7 @@ func cmdAgents(args []string) {
 	case "help", "--help", "-h":
 		fmt.Println(`Usage:
   crossagent agents list [--json]
-  crossagent agents add <name> --adapter <claude|codex|gemini> [--command <cmd>] [--display-name <name>]
+  crossagent agents add <name> --adapter <` + strings.Join(agent.AdapterNames(), "|") + `> [--command <cmd>] [--display-name <name>]
   crossagent agents remove <name>
   crossagent agents show [--workflow <name>] [--json]
   crossagent agents assign <plan|review|implement|verify> <agent> [--workflow <name>]
@@ -1251,7 +1264,8 @@ func cmdAgentsList(args []string) {
 
 func cmdAgentsAdd(args []string) {
 	if len(args) == 0 {
-		die("Usage: crossagent agents add <name> --adapter <claude|codex|gemini> [--command <cmd>] [--display-name <name>]")
+		die(fmt.Sprintf("Usage: crossagent agents add <name> --adapter <%s> [--command <cmd>] [--display-name <name>]",
+			strings.Join(agent.AdapterNames(), "|")))
 	}
 
 	name := cli.SanitizeAgentName(args[0])
@@ -1261,7 +1275,7 @@ func cmdAgentsAdd(args []string) {
 	args = args[1:]
 
 	// Check not builtin
-	if name == "claude" || name == "codex" || name == "gemini" {
+	if agent.IsBuiltinAgent(name) {
 		die(fmt.Sprintf("Cannot overwrite builtin agent '%s'.", name))
 	}
 	// Check doesn't already exist
@@ -1295,8 +1309,9 @@ func cmdAgentsAdd(args []string) {
 		}
 	}
 
-	if adapter != "claude" && adapter != "codex" && adapter != "gemini" {
-		die("Agent adapter must be one of: claude, codex, gemini")
+	if !agent.ValidAdapter(adapter) {
+		die(fmt.Sprintf("Agent adapter must be one of: %s",
+			strings.Join(agent.AdapterNames(), ", ")))
 	}
 	if command == "" {
 		command = adapter
@@ -1317,7 +1332,7 @@ func cmdAgentsRemove(args []string) {
 	}
 	name := args[0]
 
-	if name == "claude" || name == "codex" || name == "gemini" {
+	if agent.IsBuiltinAgent(name) {
 		die(fmt.Sprintf("Cannot remove builtin agent '%s'.", name))
 	}
 

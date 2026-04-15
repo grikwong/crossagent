@@ -143,10 +143,11 @@ Critical boundaries:
 ## When Modifying the CLI
 
 - Supported agent adapters are `claude`, `codex`, and `gemini`
+- Sandbox-fallback artifact recovery: OS-level sandboxes (notably gemini's `--sandbox` seatbelt profile on macOS) may deny writes to `~/.crossagent/workflows/<name>/` and force the agent to emit `plan.md` / `review.md` / `implement.md` / `verify.md` / `memory_updates.md` into the repo root (agent CWD) instead. The state helpers `state.RecoverMisplacedOutput` and `state.RecoverWorkflowOutputs` relocate such files back into the workflow directory. Recovery is wired into `crossagent advance`, the Web UI's `/api/workflow/{name}/check-file` polling, and `/check-advance`; users see a yellow "Sandbox-fallback: relocated …" line in the terminal when it triggers. Any new code path that asserts the presence of a phase-output file should run recovery first via `state.RecoverWorkflowOutputs(wfDir, repo)` so behavior is consistent.
 - Maintain the phase gate pattern: each phase checks prerequisites before running
 - All output files (plan.md, review.md, verify.md) are written by the launched AI, not by crossagent itself
 - The workflow dir is always passed as `--add-dir` to both adapters
-- Agent adapters: "claude", "codex", and "gemini" — new adapters require updates in both `agent.go` and `launcher.go`
+- Agent adapters are plugins: create `internal/agent/adapter_<name>.go` implementing the `Adapter` interface (Name/DisplayName/DefaultCommand/Plan) and call `RegisterAdapter(<yourAdapter>{})` from `init()`. Everything downstream (builtin-agent list, CLI validation messages, Web UI dropdown, `LaunchAgent` dispatch, `BuildPhaseCmd` dispatch, `TestAdapterRegistry_*` contracts) reads from the registry — no other code changes required. The current builtins are `claude`, `codex`, and `gemini`
 - Prompt templates live in `internal/prompt/templates/` as embedded `.md.tmpl` files
 - Verdict parsing must handle case-insensitive matching and various phrasings
 - Run tests with `make test` (runs `go test ./...` then integration tests)
@@ -154,7 +155,7 @@ Critical boundaries:
 ## When Modifying Go Packages
 
 - Use atomic writes (`atomicWrite`) for any state mutation
-- Agent adapters: "claude", "codex", and "gemini" — new adapters require updates in both `agent.go` and `launcher.go`
+- Agent adapters are plugins: create `internal/agent/adapter_<name>.go` implementing the `Adapter` interface (Name/DisplayName/DefaultCommand/Plan) and call `RegisterAdapter(<yourAdapter>{})` from `init()`. Everything downstream (builtin-agent list, CLI validation messages, Web UI dropdown, `LaunchAgent` dispatch, `BuildPhaseCmd` dispatch, `TestAdapterRegistry_*` contracts) reads from the registry — no other code changes required. The current builtins are `claude`, `codex`, and `gemini`
 - Prompt templates live in `internal/prompt/templates/` as embedded `.md.tmpl` files
 - Verdict parsing must handle case-insensitive matching and various phrasings
 - Run tests with `go test ./internal/...`

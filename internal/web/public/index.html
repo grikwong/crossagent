@@ -271,11 +271,8 @@
         <div class="agents-add-grid">
           <label>Name<input type="text" id="agent-name" placeholder="gemini-pro" required></label>
           <label>Adapter
-            <select id="agent-adapter">
-              <option value="claude">claude</option>
-              <option value="codex">codex</option>
-              <option value="gemini">gemini</option>
-            </select>
+            <!-- Populated dynamically from GET /api/adapters on modal open. -->
+            <select id="agent-adapter"></select>
           </label>
           <label>Command<input type="text" id="agent-command" placeholder="gemini"></label>
           <label>Display Name<input type="text" id="agent-displayname" placeholder="Gemini Pro"></label>

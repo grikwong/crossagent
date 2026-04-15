@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,7 +11,7 @@ import (
 	"github.com/grikwong/crossagent/internal/state"
 )
 
-// ANSI formatting constants for error messages (matching bash ${BOLD} and ${NC}).
+// ANSI formatting constants for error messages.
 const (
 	ansiBold  = "\033[1m"
 	ansiReset = "\033[0m"
@@ -41,223 +40,29 @@ type PhaseCmdAgent struct {
 	Adapter     string `json:"adapter"`
 }
 
-// BuildLaunchArgs constructs --add-dir flags matching bash _build_launch_args().
-// Returns the slice of arguments (e.g., --add-dir <wfDir> --add-dir <globalMemDir> ...).
+// BuildLaunchArgs returns the repeated "--add-dir <dir>" pairs expected
+// by claude/codex's native workspace-dir flag syntax. Retained as a
+// package-level helper because external callers and tests rely on it;
+// new adapter code should consume LaunchContext.AllDirs directly.
 func BuildLaunchArgs(wfDir string, addDirs []string, projectMemDir string) []string {
-	args := []string{"--add-dir", wfDir, "--add-dir", state.GlobalMemoryDir()}
-
-	if projectMemDir != "" {
-		if info, err := os.Stat(projectMemDir); err == nil && info.IsDir() {
-			args = append(args, "--add-dir", projectMemDir)
-		}
+	ctx := NewLaunchContext("", wfDir, "", addDirs, projectMemDir)
+	args := make([]string, 0, 2*len(ctx.AllDirs))
+	for _, d := range ctx.AllDirs {
+		args = append(args, "--add-dir", d)
 	}
-
-	for _, d := range addDirs {
-		if d != "" {
-			args = append(args, "--add-dir", d)
-		}
-	}
-
 	return args
 }
 
-// GenSandboxSettings generates .sandbox-settings.json matching bash _gen_sandbox_settings().
-// Returns the path to the written settings file.
+// GenSandboxSettings is retained for backward compatibility. New code
+// should go through claudeAdapter.Plan, which writes the same file.
 func GenSandboxSettings(wfDir, repo string, addDirs []string, projectMemDir string) (string, error) {
-	settingsFile := filepath.Join(wfDir, "prompts", ".sandbox-settings.json")
-	if err := os.MkdirAll(filepath.Dir(settingsFile), 0755); err != nil {
-		return "", err
-	}
-
-	// Build allowWrite paths with // prefix convention (matching bash /${path} where path starts with /)
-	allowWrite := []string{
-		"/" + wfDir,
-		"/" + repo,
-		"/" + state.GlobalMemoryDir(),
-	}
-
-	if projectMemDir != "" {
-		if info, err := os.Stat(projectMemDir); err == nil && info.IsDir() {
-			allowWrite = append(allowWrite, "/"+projectMemDir)
-		}
-	}
-
-	for _, d := range addDirs {
-		if d != "" {
-			allowWrite = append(allowWrite, "/"+d)
-		}
-	}
-
-	settings := map[string]interface{}{
-		"sandbox": map[string]interface{}{
-			"enabled": true,
-			"filesystem": map[string]interface{}{
-				"allowWrite": allowWrite,
-			},
-		},
-		"permissions": map[string]interface{}{
-			"allow": []string{
-				"Bash(*)",
-				"Read(*)",
-				"Edit(*)",
-				"Write(*)",
-				"Glob(*)",
-				"Grep(*)",
-			},
-		},
-	}
-
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return "", err
-	}
-
-	if err := os.WriteFile(settingsFile, append(data, '\n'), 0644); err != nil {
-		return "", err
-	}
-
-	return settingsFile, nil
+	ctx := NewLaunchContext(repo, wfDir, "", addDirs, projectMemDir)
+	return writeClaudeSandboxSettings(ctx)
 }
 
-// RequireAgentCommand checks that the agent's command exists on PATH or is an executable.
-// Matches bash require_agent_command().
-func RequireAgentCommand(agent *Agent) error {
-	if agent.Command == "" {
-		return fmt.Errorf("agent '%s' has no command configured", agent.Name)
-	}
-
-	if strings.Contains(agent.Command, "/") {
-		// Absolute or relative path — check if executable
-		info, err := os.Stat(agent.Command)
-		if err != nil {
-			return fmt.Errorf("agent '%s' command not found: %s", agent.Name, agent.Command)
-		}
-		if info.Mode()&0111 == 0 {
-			return fmt.Errorf("agent '%s' command is not executable: %s", agent.Name, agent.Command)
-		}
-		return nil
-	}
-
-	// PATH-based command
-	if _, err := exec.LookPath(agent.Command); err != nil {
-		return fmt.Errorf("agent '%s' command not found on PATH: %s", agent.Name, agent.Command)
-	}
-	return nil
-}
-
-// LaunchAgent dispatches to the Claude or Codex adapter, matching bash launch_agent().
-// Returns the error from the process (does NOT swallow it with || true like bash).
-func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string, projectMemDir string) error {
-	if err := RequireAgentCommand(agent); err != nil {
-		return err
-	}
-
-	launchArgs := BuildLaunchArgs(wfDir, addDirs, projectMemDir)
-
-	switch agent.Adapter {
-	case "claude":
-		settingsFile, err := GenSandboxSettings(wfDir, repo, addDirs, projectMemDir)
-		if err != nil {
-			return fmt.Errorf("failed to generate sandbox settings: %w", err)
-		}
-
-		prompt := "Read and follow the instructions at " + promptFile
-
-		args := []string{"--permission-mode", "auto", "--settings", settingsFile}
-		args = append(args, launchArgs...)
-		args = append(args, "--", prompt)
-
-		cmd := exec.Command(agent.Command, args...)
-		cmd.Dir = repo
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-
-	case "codex":
-		// Codex needs full prompt content inline
-		prompt, err := buildCodexPrompt(wfDir, promptFile)
-		if err != nil {
-			return err
-		}
-
-		args := buildCodexSpawnArgs(repo, launchArgs, prompt)
-
-		cmd := exec.Command(agent.Command, args...)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-
-	case "gemini":
-		prompt := "Read and follow the instructions at " + promptFile
-		args := buildGeminiSpawnArgs(launchArgs, prompt)
-
-		cmd := exec.Command(agent.Command, args...)
-		cmd.Dir = repo
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-
-	default:
-		return fmt.Errorf("unsupported agent adapter '%s' for agent '%s'", agent.Adapter, agent.Name)
-	}
-}
-
-// codexTrustArgs returns the -c override that pre-trusts the codex working
-// directory, so codex never prompts "Do you trust this folder?" during an
-// unattended workflow run. The repo path is TOML-escaped via %q, and
-// ValidatePath rejects repo paths containing characters (quotes, backslashes)
-// that would break that escape.
-func codexTrustArgs(repo string) []string {
-	return []string{
-		"-c",
-		fmt.Sprintf(`projects.%q.trust_level="trusted"`, repo),
-	}
-}
-
-// codexSandboxArgs pins codex to the "workspace-write" sandbox mode and
-// enumerates the exact directories outside the working tree that crossagent
-// wants writable (global/project memory + any explicit add_dirs extracted
-// from launchArgs). This guarantees codex can only write to directories we
-// explicitly allow, even when the user ran codex with a different default
-// sandbox_mode in their config.
-func codexSandboxArgs(launchArgs []string) []string {
-	dirs := extractAddDirs(launchArgs)
-	quoted := make([]string, 0, len(dirs))
-	for _, d := range dirs {
-		quoted = append(quoted, fmt.Sprintf("%q", d))
-	}
-	args := []string{"-c", `sandbox_mode="workspace-write"`}
-	if len(quoted) > 0 {
-		args = append(args,
-			"-c",
-			fmt.Sprintf("sandbox_workspace_write.writable_roots=[%s]", strings.Join(quoted, ",")),
-		)
-	}
-	// Keep network disabled: the sandbox_workspace_write default is
-	// network_access=false, which is what we want for deterministic runs.
-	return args
-}
-
-// buildCodexSpawnArgs returns the full codex argv for a given repo, launch
-// args (e.g. --add-dir pairs), and prompt. Shared by LaunchAgent and
-// BuildPhaseCmd so both execution paths carry the same trust override,
-// sandbox scope, and ordering guarantees (overrides before any --add-dir,
-// prompt after --).
-func buildCodexSpawnArgs(repo string, launchArgs []string, promptText string) []string {
-	args := []string{"--full-auto", "-C", repo}
-	args = append(args, codexTrustArgs(repo)...)
-	args = append(args, codexSandboxArgs(launchArgs)...)
-	args = append(args, launchArgs...)
-	args = append(args, "--", promptText)
-	return args
-}
-
-// extractAddDirs returns the directory values from a launchArgs slice of
-// alternating "--add-dir" flags and paths. Used by adapters whose native
-// CLI does not accept repeated --add-dir flags.
+// extractAddDirs returns the directory values from a launchArgs slice
+// of alternating "--add-dir" flags and paths. Used by the legacy
+// spawn-args builders that take launchArgs rather than LaunchContext.
 func extractAddDirs(launchArgs []string) []string {
 	var dirs []string
 	for i := 0; i+1 < len(launchArgs); i += 2 {
@@ -268,49 +73,62 @@ func extractAddDirs(launchArgs []string) []string {
 	return dirs
 }
 
-// buildGeminiSpawnArgs returns the full gemini argv for a given set of
-// launch args (repeated --add-dir pairs) and prompt. Gemini's flag shape
-// differs from claude/codex:
-//
-//   - --yolo: auto-approve tool calls (analogous to codex --full-auto and
-//     claude --permission-mode auto).
-//   - --sandbox: run the agent under an OS-level sandbox (sandbox-exec on
-//     macOS, Docker/Podman on Linux) so filesystem writes are confined to
-//     the project dir + --include-directories. Required to satisfy the
-//     "sandbox mode limited to directories explicitly given" guarantee.
-//   - --include-directories: comma-separated list of additional workspace
-//     roots (gemini does not accept repeated --add-dir flags).
-//   - -p: the bootstrap prompt.
-func buildGeminiSpawnArgs(launchArgs []string, promptText string) []string {
-	args := []string{"--yolo", "--sandbox"}
-	if dirs := extractAddDirs(launchArgs); len(dirs) > 0 {
-		args = append(args, "--include-directories", strings.Join(dirs, ","))
+// RequireAgentCommand checks that the agent's command exists on PATH
+// or is an executable file.
+func RequireAgentCommand(agent *Agent) error {
+	if agent.Command == "" {
+		return fmt.Errorf("agent '%s' has no command configured", agent.Name)
 	}
-	args = append(args, "-p", promptText)
-	return args
-}
-
-// buildCodexPrompt reads the general and phase prompt files, concatenating them for Codex.
-func buildCodexPrompt(wfDir, promptFile string) (string, error) {
-	generalFile := filepath.Join(wfDir, "prompts", "general.md")
-	promptData, err := os.ReadFile(promptFile)
-	if err != nil {
-		return "", fmt.Errorf("failed to read prompt file: %w", err)
-	}
-
-	generalData, err := os.ReadFile(generalFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return string(promptData), nil
+	if strings.Contains(agent.Command, "/") {
+		info, err := os.Stat(agent.Command)
+		if err != nil {
+			return fmt.Errorf("agent '%s' command not found: %s", agent.Name, agent.Command)
 		}
-		return "", fmt.Errorf("failed to read general instructions: %w", err)
+		if info.Mode()&0111 == 0 {
+			return fmt.Errorf("agent '%s' command is not executable: %s", agent.Name, agent.Command)
+		}
+		return nil
 	}
-
-	return strings.TrimRight(string(generalData), "\n") + "\n\n---\n\n" + strings.TrimRight(string(promptData), "\n"), nil
+	if _, err := exec.LookPath(agent.Command); err != nil {
+		return fmt.Errorf("agent '%s' command not found on PATH: %s", agent.Name, agent.Command)
+	}
+	return nil
 }
 
-// BuildPhaseCmd builds the launch parameters without executing, for phase-cmd --json.
-// Matches bash cmd_phase_cmd() including precondition checks and prompt generation.
+// LaunchAgent launches the given agent synchronously via its adapter.
+// All adapter-specific launch shaping (argv, sandbox side effects,
+// prompt construction) lives in the Adapter implementation — this
+// function only knows how to call Plan() and exec the result.
+func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string, projectMemDir string) error {
+	if err := RequireAgentCommand(agent); err != nil {
+		return err
+	}
+
+	ad, ok := AdapterFor(agent.Adapter)
+	if !ok {
+		return fmt.Errorf("unsupported agent adapter '%s' for agent '%s'", agent.Adapter, agent.Name)
+	}
+
+	ctx := NewLaunchContext(repo, wfDir, promptFile, addDirs, projectMemDir)
+	plan, err := ad.Plan(ctx)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command(agent.Command, plan.Args...)
+	if plan.WorkDir != "" {
+		cmd.Dir = plan.WorkDir
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// BuildPhaseCmd builds the launch parameters without executing, for
+// phase-cmd --json. The adapter-specific shaping is delegated to the
+// registered Adapter; this function only assembles the workflow-level
+// context (phase precondition checks, prompt file generation, config).
 func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*PhaseCmdResult, error) {
 	currentPhase, err := state.GetPhase(wfDir)
 	if err != nil {
@@ -328,70 +146,30 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 		return nil, err
 	}
 
-	// Validate implementation sub-phase is a positive integer (matching bash guard)
 	if phaseKey == "implement" && implPhase < 1 {
 		return nil, fmt.Errorf("implementation phase must be a positive integer")
 	}
 
-	var targetPhase int
-	var outputFile string
-
-	switch phaseKey {
-	case "plan":
-		targetPhase = 1
-		if pn > 1 && !force {
-			return nil, fmt.Errorf("plan phase already completed, use --force to re-run")
-		}
-		outputFile = filepath.Join(wfDir, "plan.md")
-
-	case "review":
-		targetPhase = 2
-		if pn < 2 {
-			return nil, fmt.Errorf("complete Phase 1 first, run: %scrossagent plan%s", ansiBold, ansiReset)
-		}
-		if pn > 2 && !force {
-			return nil, fmt.Errorf("review phase already completed, use --force to re-run")
-		}
-		if _, err := os.Stat(filepath.Join(wfDir, "plan.md")); os.IsNotExist(err) {
-			return nil, fmt.Errorf("plan file missing: %s/plan.md", wfDir)
-		}
-		outputFile = filepath.Join(wfDir, "review.md")
-
-	case "implement":
-		targetPhase = 3
-		if pn < 3 {
-			return nil, fmt.Errorf("complete Phase 2 first, run: %scrossagent review%s", ansiBold, ansiReset)
-		}
-		if pn > 4 && !force {
-			return nil, fmt.Errorf("workflow is complete, use --force to re-run implementation")
-		}
-		outputFile = filepath.Join(wfDir, "implement.md")
-
-	case "verify":
-		targetPhase = 4
-		if pn < 4 {
-			return nil, fmt.Errorf("complete Phase 3 first, run: %scrossagent implement%s", ansiBold, ansiReset)
-		}
-		if pn > 4 && !force {
-			return nil, fmt.Errorf("workflow is complete, use --force to re-run verification")
-		}
-		outputFile = filepath.Join(wfDir, "verify.md")
-	}
-
-	// Resolve agent
-	agent, err := GetPhaseAgent(wfDir, fmt.Sprintf("%d", targetPhase))
+	targetPhase, outputFile, err := resolveTargetPhase(wfDir, phaseKey, pn, force)
 	if err != nil {
 		return nil, err
 	}
 
-	// Generate prompt file (matching bash: gen_*_prompt is called before building JSON).
-	// This ensures prompt files are always fresh when phase-cmd --json is called.
+	ag, err := GetPhaseAgent(wfDir, fmt.Sprintf("%d", targetPhase))
+	if err != nil {
+		return nil, err
+	}
+
+	ad, ok := AdapterFor(ag.Adapter)
+	if !ok {
+		return nil, fmt.Errorf("unsupported agent adapter '%s' for agent '%s'", ag.Adapter, ag.Name)
+	}
+
 	promptFile, err := generatePhasePrompt(wfDir, phaseKey, cfg, implPhase)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate %s prompt: %w", phaseKey, err)
 	}
 
-	// Resolve project memory directory
 	projectMemDir := ""
 	if cfg.Project != "" {
 		pmDir := state.ProjectMemoryDir(cfg.Project)
@@ -400,68 +178,74 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 		}
 	}
 
-	// Build prompt text (adapter-dependent).
-	// Now that we've generated the prompt, we can always read it.
-	var promptText string
-	if agent.Adapter == "codex" {
-		generalFile := filepath.Join(wfDir, "prompts", "general.md")
-		if generalData, err := os.ReadFile(generalFile); err == nil {
-			if promptData, err := os.ReadFile(promptFile); err == nil {
-				promptText = strings.TrimRight(string(generalData), "\n") + "\n\n---\n\n" + strings.TrimRight(string(promptData), "\n")
-			} else {
-				promptText = "Read and follow the instructions at " + promptFile
-			}
-		} else {
-			promptText = "Read and follow the instructions at " + promptFile
-		}
-	} else {
-		promptText = "Read and follow the instructions at " + promptFile
-	}
-
-	// Build spawn args (adapter-specific flags + launch args)
-	launchArgs := BuildLaunchArgs(wfDir, cfg.AddDirs, projectMemDir)
-	var spawnArgs []string
-
-	switch agent.Adapter {
-	case "claude":
-		settingsFile, err := GenSandboxSettings(wfDir, cfg.Repo, cfg.AddDirs, projectMemDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate sandbox settings: %w", err)
-		}
-		spawnArgs = append(spawnArgs, "--permission-mode", "auto", "--settings", settingsFile)
-		spawnArgs = append(spawnArgs, launchArgs...)
-		spawnArgs = append(spawnArgs, "--", promptText)
-	case "codex":
-		spawnArgs = buildCodexSpawnArgs(cfg.Repo, launchArgs, promptText)
-	case "gemini":
-		spawnArgs = buildGeminiSpawnArgs(launchArgs, promptText)
+	ctx := NewLaunchContext(cfg.Repo, wfDir, promptFile, cfg.AddDirs, projectMemDir)
+	plan, err := ad.Plan(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	phaseID := fmt.Sprintf("%d", targetPhase)
-
-	result := &PhaseCmdResult{
+	return &PhaseCmdResult{
 		Agent: PhaseCmdAgent{
-			Name:        agent.Name,
-			DisplayName: agent.DisplayName,
-			Adapter:     agent.Adapter,
+			Name:        ag.Name,
+			DisplayName: ag.DisplayName,
+			Adapter:     ag.Adapter,
 		},
-		Command:     agent.Command,
-		Args:        spawnArgs,
+		Command:     ag.Command,
+		Args:        plan.Args,
 		Cwd:         cfg.Repo,
-		Prompt:      promptText,
+		Prompt:      plan.Prompt,
 		PromptFile:  promptFile,
 		OutputFile:  &outputFile,
 		Phase:       targetPhase,
 		PhaseLabel:  state.PhaseLabel(phaseID),
 		Workflow:    wfName,
 		WorkflowDir: wfDir,
-	}
+	}, nil
+}
 
-	return result, nil
+// resolveTargetPhase validates phase preconditions and returns the
+// target phase number + output file path. Extracted from BuildPhaseCmd
+// to keep the main flow linear.
+func resolveTargetPhase(wfDir, phaseKey string, pn int, force bool) (int, string, error) {
+	switch phaseKey {
+	case "plan":
+		if pn > 1 && !force {
+			return 0, "", fmt.Errorf("plan phase already completed, use --force to re-run")
+		}
+		return 1, filepath.Join(wfDir, "plan.md"), nil
+	case "review":
+		if pn < 2 {
+			return 0, "", fmt.Errorf("complete Phase 1 first, run: %scrossagent plan%s", ansiBold, ansiReset)
+		}
+		if pn > 2 && !force {
+			return 0, "", fmt.Errorf("review phase already completed, use --force to re-run")
+		}
+		if _, err := os.Stat(filepath.Join(wfDir, "plan.md")); os.IsNotExist(err) {
+			return 0, "", fmt.Errorf("plan file missing: %s/plan.md", wfDir)
+		}
+		return 2, filepath.Join(wfDir, "review.md"), nil
+	case "implement":
+		if pn < 3 {
+			return 0, "", fmt.Errorf("complete Phase 2 first, run: %scrossagent review%s", ansiBold, ansiReset)
+		}
+		if pn > 4 && !force {
+			return 0, "", fmt.Errorf("workflow is complete, use --force to re-run implementation")
+		}
+		return 3, filepath.Join(wfDir, "implement.md"), nil
+	case "verify":
+		if pn < 4 {
+			return 0, "", fmt.Errorf("complete Phase 3 first, run: %scrossagent implement%s", ansiBold, ansiReset)
+		}
+		if pn > 4 && !force {
+			return 0, "", fmt.Errorf("workflow is complete, use --force to re-run verification")
+		}
+		return 4, filepath.Join(wfDir, "verify.md"), nil
+	}
+	return 0, "", fmt.Errorf("unknown phase: %s", phaseKey)
 }
 
 // generatePhasePrompt calls the appropriate prompt generation function for the given phase.
-// This mirrors bash behavior where cmd_phase_cmd() always generates prompts before building JSON.
 func generatePhasePrompt(wfDir, phaseKey string, cfg *state.Config, implPhase int) (string, error) {
 	switch phaseKey {
 	case "plan":
@@ -476,3 +260,4 @@ func generatePhasePrompt(wfDir, phaseKey string, cfg *state.Config, implPhase in
 		return "", fmt.Errorf("unknown phase: %s", phaseKey)
 	}
 }
+

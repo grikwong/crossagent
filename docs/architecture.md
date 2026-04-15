@@ -116,6 +116,53 @@ Three built-in adapters:
 
 All three adapters enforce the same invariant: **no writes outside the directories crossagent explicitly hands to the agent** (workflow dir, repo, global/project memory, and any configured `add_dirs`).
 
+### Adapter plugin model
+
+Adapters live behind a small interface in `internal/agent/adapter.go`:
+
+```go
+type Adapter interface {
+    Name() string
+    DisplayName() string
+    DefaultCommand() string
+    Plan(ctx *LaunchContext) (*LaunchPlan, error)
+}
+```
+
+Each adapter is a single file (`adapter_claude.go`, `adapter_codex.go`, `adapter_gemini.go`) that implements the interface and calls `RegisterAdapter(<yourAdapter>{})` from `init()`. Everything downstream is derived from the registry, so adding a new adapter is a one-file change:
+
+- `LaunchAgent` and `BuildPhaseCmd` dispatch via `AdapterFor(name).Plan(ctx)` — no switch statements to update.
+- `ListAgents` iterates `AdapterNames()` and builds one builtin per adapter.
+- CLI usage strings (`--adapter <…>`) and validation messages are composed from `AdapterNames()`.
+- The Web UI dropdown fetches `GET /api/adapters` on open and populates `<option>` tags dynamically.
+- `IsBuiltinAgent(name)` and `ValidAdapter(name)` replace the old duplicated allowlists.
+- `TestAdapterRegistry_ContractsHoldForAllBuiltins` sweeps every registered adapter and enforces the interface contract, so a new adapter that forgets to wire up DisplayName / DefaultCommand / registration fails loudly in CI.
+
+`LaunchContext` aggregates every input an adapter could need (Repo, WorkflowDir, PromptFile, AllDirs). Adding a new field is backward-compatible — existing adapters simply ignore what they don't read. `LaunchPlan` is the adapter's answer: argv, prompt text for display, and an optional `WorkDir` override (codex leaves it empty because it uses `-C <repo>`; claude and gemini set it to the repo).
+
+The three current adapters are good worked examples:
+
+- `adapter_claude.go` writes a sandbox settings JSON as a side effect in Plan().
+- `adapter_codex.go` emits multiple `-c` TOML overrides and inlines the full general+phase prompt.
+- `adapter_gemini.go` translates the ordered `AllDirs` list into a comma-joined `--include-directories` value.
+
+### Sandbox-fallback artifact recovery
+
+OS-level sandboxes (notably gemini's `--sandbox` seatbelt profile on macOS, which in practice only grants write access to the working directory) can deny the agent's attempts to write phase outputs into `~/.crossagent/workflows/<name>/`. When that happens the agent falls back to emitting `plan.md` / `review.md` / `implement.md` / `verify.md` (and a gemini-specific `memory_updates.md` staging file) into the repo root — the one location inside its sandbox it is allowed to write.
+
+The `internal/state` package exposes two recovery helpers:
+
+- `RecoverMisplacedOutput(wfDir, repo, basename)` — atomically relocates a single file from the repo root into the workflow dir (os.Rename on the same filesystem, copy+remove fallback across filesystems). No-op when the workflow copy already exists, the repo copy is missing, or the two paths resolve to the same file.
+- `RecoverWorkflowOutputs(wfDir, repo)` — sweeps every entry in `RecoverableArtifacts` (`plan.md`, `review.md`, `implement.md`, `verify.md`, `memory_updates.md`).
+
+Recovery is invoked from three call sites so every downstream check sees a consistent filesystem view:
+
+1. `crossagent advance` (CLI) — sweep before the phase-number bump.
+2. `POST /api/workflow/{name}/check-file` (Web UI poll) — recover the single requested artifact, then stat. The response carries `{recovered: bool, recovered_from: string}` so the frontend prints a yellow "Sandbox-fallback: relocated …" line.
+3. `POST /api/workflow/{name}/check-advance` — same recovery before the advance decision.
+
+A path-scope guard ensures recovery only ever moves files into the workflow directory of the caller's workflow; paths outside that directory are left alone.
+
 Each adapter constructs launch arguments including:
 - Workspace directory flags (`--add-dir` for claude/codex, `--include-directories` for gemini) covering the workflow directory, global/project memory, and any extra `add_dirs`
 - Auto-approval / sandbox settings appropriate for the adapter
