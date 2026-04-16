@@ -95,6 +95,25 @@ Memory flows into prompts via `prompt.BuildMemoryContext()` and `prompt.BuildMem
 - **Atomic writes** — all state mutations use a temp file + rename pattern to prevent partial-write corruption.
 - **File locking** — `syscall.Flock` for concurrent `SetConf` calls.
 
+## Hardened State Management
+
+### Atomic State & Concurrency
+Crossagent is designed to be safe for simultaneous use by the CLI and Web UI. All state transitions (phase bumps, configuration changes, memory updates) use an atomic write pattern (temp file + rename) and OS-level file locking (`syscall.Flock`). This ensures that:
+- **Zero-Partial Writes**: A crash or interruption during a state write never leaves a corrupted file.
+- **Race Condition Prevention**: Concurrent CLI commands and Web API calls are serialized at the file level.
+- **Consistent View**: Recovery and state-sync logic run before every phase-advancement check, providing a unified view of the workflow filesystem.
+
+### Multi-Round Workflows
+Workflows can be iterated in multiple "rounds." When a workflow is completed (Phase 4 → Done), the **Follow-up** feature archives all phase artifacts (`plan.md`, `review.md`, etc.), retry attempts, and chat logs into a `rounds/N/` directory. 
+- **Context Preservation**: The reset to Phase 1 for the new round automatically generates a `followup-context.md` that summarizes previous findings to guide the next iteration.
+- **Deep History**: The Web UI allows browsing all previous rounds, including their specific terminal session logs and interim retry attempts.
+
+### Robust Artifact Recovery
+Sandboxed agents (especially Gemini on macOS) may be forced to write artifacts into the repo root (their CWD) rather than the workflow directory. Crossagent's recovery system:
+- **Canonical Path Resolution**: Automatically evaluates symlinks (e.g., `/Users` vs `/private/var/users`) to ensure sandbox profiles correctly authorize the workflow directory.
+- **Atomic Relocation**: Moves misplaced artifacts back to their canonical location using a transactional pattern (rollback on failure).
+- **Probe Guarding**: Identifies and quarantines 4-byte sandbox probe files (e.g., `test`) to prevent them from overwriting legitimate artifacts.
+
 ## WebSocket + PTY Protocol
 
 The Web UI spawns interactive agent sessions via WebSocket:
@@ -112,7 +131,7 @@ Three built-in adapters:
 
 - `claude` (Claude Code CLI) — `--permission-mode auto` auto-approves tool calls; a generated `--settings` JSON enables the built-in sandbox with `allowWrite` pinned to {workflow dir, repo, global/project memory, add_dirs}; repeated `--add-dir` flags surface those dirs as workspace roots.
 - `codex` (Codex CLI) — `--full-auto` auto-approves tool calls; `-c sandbox_mode="workspace-write"` forces the workspace-write sandbox (overriding any user default), and `-c sandbox_workspace_write.writable_roots=[…]` explicitly lists every add-dir (memory + add_dirs) as writable, so writes outside `{repo} ∪ writable_roots` are blocked; a pre-trust override avoids the "Do you trust this folder?" prompt; the full prompt content is inlined (general + phase concatenated).
-- `gemini` (Google Gemini CLI) — `--yolo` auto-approves tool calls, `--sandbox` runs the agent under an OS-level sandbox (sandbox-exec on macOS, Docker/Podman on Linux) scoped to the project dir plus `--include-directories <comma-list>`; the bootstrap prompt is passed via `-p`.
+- `gemini` (Google Gemini CLI) — `--yolo` auto-approves tool calls, `--sandbox` runs the agent under an OS-level sandbox (sandbox-exec on macOS, Docker/Podman on Linux) scoped to the project dir plus `--include-directories <comma-list>`. Crossagent automatically **consolidates** subdirectories under their parent and **caps** the list to 5 slots to stay within the macOS seatbelt capacity, while ensuring the workflow and home directories always take the first slots. The bootstrap prompt is passed via `-p`.
 
 All three adapters enforce the same invariant: **no writes outside the directories crossagent explicitly hands to the agent** (workflow dir, repo, global/project memory, and any configured `add_dirs`).
 
@@ -148,11 +167,11 @@ The three current adapters are good worked examples:
 
 ### Sandbox-fallback artifact recovery
 
-OS-level sandboxes (notably gemini's `--sandbox` seatbelt profile on macOS, which in practice only grants write access to the working directory) can deny the agent's attempts to write phase outputs into `~/.crossagent/workflows/<name>/`. When that happens the agent falls back to emitting `plan.md` / `review.md` / `implement.md` / `verify.md` (and a gemini-specific `memory_updates.md` staging file) into the repo root — the one location inside its sandbox it is allowed to write.
+OS-level sandboxes (notably gemini's `--sandbox` seatbelt profile on macOS) can deny write attempts to `~/.crossagent/workflows/<name>/` if paths are not canonicalized. Crossagent now automatically **resolves all symlinks** (e.g. `/Users` vs `/private/var/users`) and explicitly **authorizes the crossagent home directory** in the adapter launch context. The seatbelt profile bundled with gemini (`bundle/sandbox-macos-*.sb`) grants writes to `INCLUDE_DIR_0..4` populated from `--include-directories`, and `ctx.AllDirs` always puts the workflow dir in the first slot — so in the common path writes to the workflow dir succeed. 
 
-The `internal/state` package exposes two recovery helpers:
+Fallbacks are now rare and handled by `internal/state` recovery helpers:
 
-- `RecoverMisplacedOutput(wfDir, repo, basename)` — atomically relocates a single file from the repo root into the workflow dir (os.Rename on the same filesystem, copy+remove fallback across filesystems). No-op when the workflow copy already exists, the repo copy is missing, or the two paths resolve to the same file.
+- `RecoverMisplacedOutput(wfDir, repo, basename)` — atomically relocates a single file from the repo root into the workflow dir (os.Rename on the same filesystem, copy+remove fallback across filesystems). No-op when the workflow copy already exists, the repo copy is missing, or the two paths resolve to the same file. **Probe guard:** candidates that fail `looksSubstantive` (≥ 256 B plus a markdown header for phase outputs) are quarantined in-place with a `.sandbox-probe` suffix instead of being promoted. This prevents sandbox probe files (e.g. a 4-byte `"test"` gemini writes to verify CWD access) from overwriting the canonical artifact slot and stalling the workflow in a plan↔review retry loop.
 - `RecoverWorkflowOutputs(wfDir, repo)` — sweeps every entry in `RecoverableArtifacts` (`plan.md`, `review.md`, `implement.md`, `verify.md`, `memory_updates.md`).
 
 Recovery is invoked from three call sites so every downstream check sees a consistent filesystem view:
@@ -162,6 +181,10 @@ Recovery is invoked from three call sites so every downstream check sees a consi
 3. `POST /api/workflow/{name}/check-advance` — same recovery before the advance decision.
 
 A path-scope guard ensures recovery only ever moves files into the workflow directory of the caller's workflow; paths outside that directory are left alone.
+
+### Advance verdict gate
+
+`crossagent advance` (phase 2→3 and phase 4→done) inspects the corresponding `review.md` / `verify.md` verdict via `internal/judge` and refuses to bump the phase when the parsed verdict is `Rework` (or `Fix` for verify). This closes a half-state window where the Web UI had bumped the phase but the follow-up `/supervise` call had not yet run the revert — which is how workflows could end up at phase=3 with no approval on record. A missing artifact preserves the legacy dry-advance behavior so integration tests and CLI-only flows that advance phases without producing artifacts still work.
 
 Each adapter constructs launch arguments including:
 - Workspace directory flags (`--add-dir` for claude/codex, `--include-directories` for gemini) covering the workflow directory, global/project memory, and any extra `add_dirs`

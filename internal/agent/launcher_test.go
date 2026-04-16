@@ -2,7 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,16 +20,27 @@ func TestBuildLaunchArgs(t *testing.T) {
 
 	args := BuildLaunchArgs(wfDir, nil, "")
 
-	// Should contain --add-dir wfDir --add-dir globalMemDir
+	// resolve helper to match NewLaunchContext behavior
+	resolve := func(p string) string {
+		if abs, err := filepath.EvalSymlinks(p); err == nil {
+			return abs
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+
+	// Should contain --add-dir wfDir --add-dir home
+	// globalMemDir is skipped as it is under home
 	if len(args) != 4 {
 		t.Fatalf("expected 4 args, got %d: %v", len(args), args)
 	}
-	if args[0] != "--add-dir" || args[1] != wfDir {
-		t.Errorf("first --add-dir should be wfDir, got %v", args[:2])
+	if args[0] != "--add-dir" || args[1] != resolve(wfDir) {
+		t.Errorf("first --add-dir should be resolved wfDir, got %v", args[:2])
 	}
-	globalMemDir := state.GlobalMemoryDir()
-	if args[2] != "--add-dir" || args[3] != globalMemDir {
-		t.Errorf("second --add-dir should be globalMemDir, got %v", args[2:4])
+	if args[2] != "--add-dir" || args[3] != resolve(home) {
+		t.Errorf("second --add-dir should be resolved home, got %v", args[2:4])
 	}
 }
 
@@ -42,12 +55,24 @@ func TestBuildLaunchArgsWithProjectMem(t *testing.T) {
 
 	args := BuildLaunchArgs(wfDir, nil, projMemDir)
 
-	// Should contain 3 --add-dir entries
-	if len(args) != 6 {
-		t.Fatalf("expected 6 args, got %d: %v", len(args), args)
+	// resolve helper
+	resolve := func(p string) string {
+		if abs, err := filepath.EvalSymlinks(p); err == nil {
+			return abs
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
 	}
-	if args[4] != "--add-dir" || args[5] != projMemDir {
-		t.Errorf("third --add-dir should be projMemDir, got %v", args[4:6])
+
+	// Should contain 2 --add-dir entries: wfDir and home
+	// projMemDir is skipped as it is under home
+	if len(args) != 4 {
+		t.Fatalf("expected 4 args, got %d: %v", len(args), args)
+	}
+	if args[2] != "--add-dir" || args[3] != resolve(home) {
+		t.Errorf("second --add-dir should be resolved home, got %v", args[2:4])
 	}
 }
 
@@ -59,7 +84,7 @@ func TestBuildLaunchArgsWithAddDirs(t *testing.T) {
 
 	args := BuildLaunchArgs(wfDir, []string{"/extra/dir1", "/extra/dir2"}, "")
 
-	// wfDir + globalMem + 2 extra = 4 entries = 8 args
+	// wfDir + home + 2 extra = 4 entries = 8 args
 	if len(args) != 8 {
 		t.Fatalf("expected 8 args, got %d: %v", len(args), args)
 	}
@@ -151,9 +176,10 @@ func TestGenSandboxSettingsWithAddDirs(t *testing.T) {
 	fs := sandbox["filesystem"].(map[string]interface{})
 	allowWrite := fs["allowWrite"].([]interface{})
 
-	// wfDir + repo + globalMem + projMem + extra = 5
-	if len(allowWrite) != 5 {
-		t.Fatalf("expected 5 allowWrite entries, got %d: %v", len(allowWrite), allowWrite)
+	// repo + wfDir + home + extra = 4
+	// globalMem and projMem are skipped as they are under home
+	if len(allowWrite) != 4 {
+		t.Fatalf("expected 4 allowWrite entries, got %d: %v", len(allowWrite), allowWrite)
 	}
 }
 
@@ -431,6 +457,7 @@ func TestBuildPhaseCmdJSONParity(t *testing.T) {
 	bashContractKeys := []string{
 		"agent", "command", "args", "cwd", "prompt", "prompt_file",
 		"output_file", "phase", "phase_label", "workflow", "workflow_dir",
+		"extraction_status",
 	}
 	for _, key := range bashContractKeys {
 		if _, ok := parsed[key]; !ok {
@@ -513,7 +540,7 @@ func TestBuildCodexSpawnArgsOrdering(t *testing.T) {
 		"--full-auto", "-C", repo,
 		"-c", `projects."/tmp/repo".trust_level="trusted"`,
 		"-c", `sandbox_mode="workspace-write"`,
-		"-c", `sandbox_workspace_write.writable_roots=["/tmp/wf","/tmp/mem"]`,
+		"-c", `sandbox_workspace_write.writable_roots=["/tmp/repo","/tmp/wf","/tmp/mem"]`,
 		"--add-dir", "/tmp/wf", "--add-dir", "/tmp/mem",
 		"--", prompt,
 	}
@@ -703,13 +730,12 @@ func TestBuildPhaseCmdGeminiAdapter(t *testing.T) {
 		t.Fatalf("agent.adapter = %q, want %q", result.Agent.Adapter, "gemini")
 	}
 
-	var yoloIdx, sandboxIdx, includeIdx, includeVal, promptIdx = -1, -1, -1, -1, -1
+	var approvalIdx, approvalVal, sandboxIdx, includeIdx, includeVal, promptIdx, allowedIdx, allowedVal = -1, -1, -1, -1, -1, -1, -1, -1
 	for i, a := range result.Args {
 		switch a {
-		case "--yolo":
-			if yoloIdx == -1 {
-				yoloIdx = i
-			}
+		case "--approval-mode":
+			approvalIdx = i
+			approvalVal = i + 1
 		case "--sandbox":
 			if sandboxIdx == -1 {
 				sandboxIdx = i
@@ -723,11 +749,17 @@ func TestBuildPhaseCmdGeminiAdapter(t *testing.T) {
 			if promptIdx == -1 {
 				promptIdx = i
 			}
+		case "--allowed-tools":
+			allowedIdx = i
+			allowedVal = i + 1
 		}
 	}
 
-	if yoloIdx == -1 {
-		t.Errorf("gemini Args missing --yolo; got %v", result.Args)
+	if approvalIdx == -1 || approvalVal >= len(result.Args) || result.Args[approvalVal] != "yolo" {
+		t.Errorf("gemini Args missing --approval-mode yolo; got %v", result.Args)
+	}
+	if allowedIdx == -1 || allowedVal >= len(result.Args) || result.Args[allowedVal] != "*" {
+		t.Errorf("gemini Args missing --allowed-tools \"*\"; got %v", result.Args)
 	}
 	if sandboxIdx == -1 {
 		t.Errorf("gemini Args missing --sandbox (writes must be OS-sandboxed); got %v", result.Args)
@@ -745,7 +777,7 @@ func TestBuildPhaseCmdGeminiAdapter(t *testing.T) {
 	if promptIdx == -1 || promptIdx+1 >= len(result.Args) {
 		t.Fatalf("gemini Args missing -p <prompt>; got %v", result.Args)
 	}
-	if !strings.HasPrefix(result.Args[promptIdx+1], "Read and follow the instructions at ") {
+	if !strings.HasPrefix(result.Args[promptIdx+1], "Do not ask for confirmation or agreement;") {
 		t.Errorf("gemini -p prompt should be a bootstrap instruction; got %q", result.Args[promptIdx+1])
 	}
 	// Claude-specific flags must not leak.
@@ -781,5 +813,528 @@ func TestBuildPhaseCmdForce(t *testing.T) {
 	}
 	if result.Phase != 1 {
 		t.Errorf("phase = %d, want 1", result.Phase)
+	}
+}
+
+// TestClaudeAdapterImplementSandboxRestriction verifies that claude's
+// implement-phase sandbox allowWrite list is pinned to the canonicalized
+// affected files plus the workflow implement.md and memory dirs — and
+// that an out-of-repo escape reaching the adapter is defensively dropped.
+func TestClaudeAdapterImplementSandboxRestriction(t *testing.T) {
+	home := setupTestHome(t)
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755)
+
+	repo := filepath.Join(home, "repo")
+	os.MkdirAll(filepath.Join(repo, "internal/agent"), 0755)
+	os.MkdirAll(filepath.Join(repo, "cmd/crossagent"), 0755)
+	os.WriteFile(filepath.Join(repo, "internal/agent/launcher.go"), []byte("package agent"), 0644)
+	os.WriteFile(filepath.Join(repo, "cmd/crossagent/main.go"), []byte("package main"), 0644)
+
+	affected := []string{
+		filepath.Join(repo, "internal/agent/launcher.go"),
+		filepath.Join(repo, "cmd/crossagent/main.go"),
+		// Defensive: an adapter must ignore out-of-repo paths even if
+		// upstream canonicalization is ever bypassed.
+		"/etc/passwd",
+	}
+	ctx := NewLaunchContext(repo, wfDir, "/tmp/prompt.md", nil, "", affected, "implement", ExtractionOK)
+
+	plan, err := claudeAdapter{}.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// resolve helper
+	resolve := func(p string) string {
+		if abs, err := filepath.EvalSymlinks(p); err == nil {
+			return abs
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+
+	// Read generated sandbox settings and inspect allowWrite.
+	var settingsFile string
+	for i, a := range plan.Args {
+		if a == "--settings" && i+1 < len(plan.Args) {
+			settingsFile = plan.Args[i+1]
+			break
+		}
+	}
+	if settingsFile == "" {
+		t.Fatal("claude args missing --settings <file>")
+	}
+	data, err := os.ReadFile(settingsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Sandbox struct {
+			Filesystem struct {
+				AllowWrite []string `json:"allowWrite"`
+			} `json:"filesystem"`
+		} `json:"sandbox"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	aw := strings.Join(parsed.Sandbox.Filesystem.AllowWrite, ",")
+
+	if !strings.Contains(aw, resolve(repo)+"/internal/agent/launcher.go") {
+		t.Errorf("allowWrite missing canonical affected file; got %s", aw)
+	}
+	if strings.Contains(aw, "/etc/passwd") {
+		t.Errorf("allowWrite leaked out-of-repo path; got %s", aw)
+	}
+	if !strings.Contains(aw, resolve(filepath.Join(wfDir, "implement.md"))) {
+		t.Errorf("allowWrite missing workflow implement.md; got %s", aw)
+	}
+	// The repo itself must NOT be blanket-writable when affected files
+	// are supplied — that's the whole point of the restriction.
+	repoEntry := "/" + strings.TrimPrefix(resolve(repo), "/")
+	for _, p := range parsed.Sandbox.Filesystem.AllowWrite {
+		if p == repoEntry {
+			t.Errorf("allowWrite should not include repo root when affected files present; got %s", aw)
+		}
+	}
+}
+
+// TestCodexAdapterImplementSandboxRestriction mirrors the claude test
+// for codex's writable_roots. Both adapters must apply the same rule so
+// one family cannot silently regress into repo-wide writes.
+func TestCodexAdapterImplementSandboxRestriction(t *testing.T) {
+	home := setupTestHome(t)
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755)
+	// codex adapter reads general.md from the prompts dir.
+	os.WriteFile(filepath.Join(wfDir, "prompts", "general.md"), []byte("general"), 0644)
+
+	repo := filepath.Join(home, "repo")
+	os.MkdirAll(filepath.Join(repo, "internal/agent"), 0755)
+	os.WriteFile(filepath.Join(repo, "internal/agent/launcher.go"), []byte("package agent"), 0644)
+
+	promptFile := filepath.Join(wfDir, "prompts", "implement.md")
+	os.WriteFile(promptFile, []byte("implement prompt"), 0644)
+
+	affected := []string{
+		filepath.Join(repo, "internal/agent/launcher.go"),
+		"/etc/passwd", // defensive-assertion target
+	}
+	ctx := NewLaunchContext(repo, wfDir, promptFile, nil, "", affected, "implement", ExtractionOK)
+
+	plan, err := codexAdapter{}.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// resolve helper
+	resolve := func(p string) string {
+		if abs, err := filepath.EvalSymlinks(p); err == nil {
+			return abs
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+
+	var rootsVal string
+	for i, a := range plan.Args {
+		if a == "-c" && i+1 < len(plan.Args) &&
+			strings.HasPrefix(plan.Args[i+1], "sandbox_workspace_write.writable_roots=[") {
+			rootsVal = plan.Args[i+1]
+			break
+		}
+	}
+	if rootsVal == "" {
+		t.Fatalf("codex args missing writable_roots override; got %v", plan.Args)
+	}
+
+	if !strings.Contains(rootsVal, resolve(repo)+"/internal/agent/launcher.go") {
+		t.Errorf("writable_roots missing canonical affected file; got %s", rootsVal)
+	}
+	if strings.Contains(rootsVal, "/etc/passwd") {
+		t.Errorf("writable_roots leaked out-of-repo path; got %s", rootsVal)
+	}
+	if !strings.Contains(rootsVal, resolve(filepath.Join(wfDir, "implement.md"))) {
+		t.Errorf("writable_roots missing workflow implement.md; got %s", rootsVal)
+	}
+	// Repo root itself must not appear as a standalone writable root
+	// once affected-file restriction is in effect.
+	if strings.Contains(rootsVal, `"`+resolve(repo)+`"`) {
+		t.Errorf("writable_roots should not include repo root when affected files present; got %s", rootsVal)
+	}
+}
+
+func TestExtractionStatusClassification(t *testing.T) {
+	home := setupTestHome(t)
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	wfDir := filepath.Join(home, "workflows", "wf")
+	if err := os.MkdirAll(wfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		planBody  string
+		writePlan bool
+		phase     string
+		want      ExtractionStatus
+	}{
+		{
+			name:  "plan_phase_always_ok",
+			phase: "plan",
+			want:  ExtractionOK,
+		},
+		{
+			name:      "missing_plan_file",
+			writePlan: false,
+			phase:     "review",
+			want:      ExtractionMissing,
+		},
+		{
+			name: "section_absent",
+			planBody: `# Plan
+
+Some prose without an Affected Files header.
+`,
+			writePlan: true,
+			phase:     "review",
+			want:      ExtractionMissing,
+		},
+		{
+			name: "empty_section",
+			planBody: `# Plan
+
+## Affected Files
+
+(none)
+`,
+			writePlan: true,
+			phase:     "review",
+			want:      ExtractionEmpty,
+		},
+		{
+			name: "malformed_section",
+			planBody: `# Plan
+
+## Affected Files
+
+- ../../escape/path
+- .
+`,
+			writePlan: true,
+			phase:     "review",
+			want:      ExtractionMalformed,
+		},
+		{
+			name: "ok_section",
+			planBody: `# Plan
+
+## Affected Files
+
+- ` + "`internal/agent/launcher.go`" + `
+`,
+			writePlan: true,
+			phase:     "review",
+			want:      ExtractionOK,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			planPath := filepath.Join(wfDir, "plan.md")
+			os.Remove(planPath)
+			if tc.writePlan {
+				if err := os.WriteFile(planPath, []byte(tc.planBody), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, status, err := extractAffectedFilesForPhase(wfDir, repo, tc.phase)
+			if err != nil {
+				t.Fatalf("extractAffectedFilesForPhase: %v", err)
+			}
+			if status != tc.want {
+				t.Errorf("status = %q, want %q", status, tc.want)
+			}
+		})
+	}
+}
+
+// TestLaunchAgentDegradedSandboxWarning locks in the stderr warning
+// emission in LaunchAgent() when extraction status is anything other
+// than ok. Only the direct launch path emits this warning — BuildPhaseCmd
+// surfaces the status via JSON — so this regression must exercise
+// LaunchAgent directly.
+func TestLaunchAgentDegradedSandboxWarning(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("/bin/true not available on this system")
+	}
+
+	home := setupTestHome(t)
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	if err := os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// plan.md without an Affected Files section -> ExtractionMissing
+	// when LaunchAgent runs extractAffectedFilesForPhase for "implement".
+	planBody := "# Plan\n\nSome prose without an Affected Files header.\n"
+	if err := os.WriteFile(filepath.Join(wfDir, "plan.md"), []byte(planBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	promptFile := filepath.Join(wfDir, "prompts", "implement.md")
+	if err := os.WriteFile(promptFile, []byte("noop prompt"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &Agent{
+		Name:    "noop",
+		Command: truePath,
+		Adapter: "claude",
+	}
+
+	// Redirect os.Stderr to a pipe so we can capture the WARNING line.
+	// LaunchAgent wires cmd.Stderr = os.Stderr and also writes its
+	// degraded-sandbox warning through fmt.Fprintf(os.Stderr, ...).
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+
+	done := make(chan error, 1)
+	go func() {
+		done <- LaunchAgent(ag, repo, promptFile, wfDir, nil, "", "implement")
+	}()
+
+	captured := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		captured <- b
+	}()
+
+	launchErr := <-done
+	w.Close()
+	os.Stderr = origStderr
+	out := string(<-captured)
+
+	if launchErr != nil {
+		t.Fatalf("LaunchAgent failed: %v (stderr: %s)", launchErr, out)
+	}
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("stderr missing WARNING prefix; got %q", out)
+	}
+	if !strings.Contains(out, "degraded sandbox") {
+		t.Errorf("stderr missing degraded-sandbox message; got %q", out)
+	}
+	if !strings.Contains(out, string(ExtractionMissing)) {
+		t.Errorf("stderr missing extraction status %q; got %q", ExtractionMissing, out)
+	}
+}
+
+// TestClaudeAdapterFailClosed pins claudeAdapter.Plan to fail-closed
+// behavior when the implement phase runs with an empty AffectedFiles
+// list (the degraded-extraction case). The sandbox allowWrite list
+// must NEVER contain the repo root: a fallback would collapse the
+// sandbox back to repo-wide writes at exactly the moment extraction
+// is least trustworthy.
+func TestClaudeAdapterFailClosed(t *testing.T) {
+	home := setupTestHome(t)
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	if err := os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// resolve helper
+	resolve := func(p string) string {
+		if abs, err := filepath.EvalSymlinks(p); err == nil {
+			return abs
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create implement.md so resolve can canonicalize it.
+	if err := os.WriteFile(filepath.Join(wfDir, "implement.md"), []byte("implement"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	repoEntry := "/" + strings.TrimPrefix(resolve(repo), "/")
+
+	cases := []struct {
+		name   string
+		status ExtractionStatus
+	}{
+		{"missing", ExtractionMissing},
+		{"empty", ExtractionEmpty},
+		{"malformed", ExtractionMalformed},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := NewLaunchContext(repo, wfDir, "/tmp/prompt.md", nil, "", nil, "implement", tc.status)
+
+			plan, err := claudeAdapter{}.Plan(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var settingsFile string
+			for i, a := range plan.Args {
+				if a == "--settings" && i+1 < len(plan.Args) {
+					settingsFile = plan.Args[i+1]
+					break
+				}
+			}
+			if settingsFile == "" {
+				t.Fatal("claude args missing --settings <file>")
+			}
+			data, err := os.ReadFile(settingsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parsed struct {
+				Sandbox struct {
+					Filesystem struct {
+						AllowWrite []string `json:"allowWrite"`
+					} `json:"filesystem"`
+				} `json:"sandbox"`
+			}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatal(err)
+			}
+
+			// resolve helper
+			resolve := func(p string) string {
+				if abs, err := filepath.EvalSymlinks(p); err == nil {
+					return abs
+				}
+				if abs, err := filepath.Abs(p); err == nil {
+					return abs
+				}
+				return p
+			}
+
+			for _, p := range parsed.Sandbox.Filesystem.AllowWrite {
+				if p == repoEntry {
+					t.Errorf("allowWrite must not include repo root on degraded extraction (%s); got %v",
+						tc.status, parsed.Sandbox.Filesystem.AllowWrite)
+				}
+			}
+			// The implement.md report under the workflow dir must always
+			// remain writable so the agent can signal completion.
+			implementReport := "/" + strings.TrimPrefix(resolve(filepath.Join(wfDir, "implement.md")), "/")
+			found := false
+			for _, p := range parsed.Sandbox.Filesystem.AllowWrite {
+				if p == implementReport {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("allowWrite missing workflow implement.md on degraded extraction (%s); got %v",
+					tc.status, parsed.Sandbox.Filesystem.AllowWrite)
+			}
+		})
+	}
+}
+
+// TestCodexAdapterFailClosed mirrors TestClaudeAdapterFailClosed for
+// codex's sandbox_workspace_write.writable_roots. Both adapters must
+// apply the same rule so one family cannot silently regress into
+// repo-wide writes when extraction is degraded.
+func TestCodexAdapterFailClosed(t *testing.T) {
+	home := setupTestHome(t)
+	wfDir := filepath.Join(home, "workflows", "test-wf")
+	if err := os.MkdirAll(filepath.Join(wfDir, "prompts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "prompts", "general.md"), []byte("general"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	promptFile := filepath.Join(wfDir, "prompts", "implement.md")
+	if err := os.WriteFile(promptFile, []byte("implement prompt"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create implement.md so resolve can canonicalize it.
+	if err := os.WriteFile(filepath.Join(wfDir, "implement.md"), []byte("implement"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// resolve helper
+	resolve := func(p string) string {
+		if abs, err := filepath.EvalSymlinks(p); err == nil {
+			return abs
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+
+	cases := []struct {
+		name   string
+		status ExtractionStatus
+	}{
+		{"missing", ExtractionMissing},
+		{"empty", ExtractionEmpty},
+		{"malformed", ExtractionMalformed},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := NewLaunchContext(repo, wfDir, promptFile, nil, "", nil, "implement", tc.status)
+
+			plan, err := codexAdapter{}.Plan(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var rootsVal string
+			for i, a := range plan.Args {
+				if a == "-c" && i+1 < len(plan.Args) &&
+					strings.HasPrefix(plan.Args[i+1], "sandbox_workspace_write.writable_roots=[") {
+					rootsVal = plan.Args[i+1]
+					break
+				}
+			}
+			if rootsVal == "" {
+				t.Fatalf("codex args missing writable_roots override; got %v", plan.Args)
+			}
+
+			// The repo root must not appear as a standalone quoted entry.
+			// Substring search would also match repo-prefixed files, so
+			// we look for the exact quoted repo token.
+			if strings.Contains(rootsVal, `"`+resolve(repo)+`"`) {
+				t.Errorf("writable_roots must not include repo root on degraded extraction (%s); got %s",
+					tc.status, rootsVal)
+			}
+			if !strings.Contains(rootsVal, resolve(filepath.Join(wfDir, "implement.md"))) {
+				t.Errorf("writable_roots missing workflow implement.md on degraded extraction (%s); got %s",
+					tc.status, rootsVal)
+			}
+		})
 	}
 }

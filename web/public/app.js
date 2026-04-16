@@ -1009,13 +1009,19 @@ async function refreshAfterAdvance(phaseName) {
 
 async function tryAutoAdvance(outputFile, retries) {
   for (let i = 0; i < retries; i++) {
-    if (i > 0) await sleep(1000);
+    if (i > 0) await sleep(1500);
     try {
       const result = await api('/check-advance', {
         method: 'POST',
         body: JSON.stringify({ output_file: outputFile }),
       });
-      if (result.advanced) return true;
+      if (result.advanced) {
+        if (result.recovered) {
+          const basename = result.recovered_from.split('/').pop();
+          term.writeln(`\x1b[33m  Sandbox-fallback: relocated ${basename} to workflow directory.\x1b[0m`);
+        }
+        return true;
+      }
     } catch {}
   }
   return false;

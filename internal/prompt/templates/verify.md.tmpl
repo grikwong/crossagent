@@ -77,7 +77,9 @@ One of: **Ship it** | **Fix issues first** | **Needs rework**
 held up. "Needs rework" means fundamental issues require significant changes.
 
 ## CRITICAL
-You MUST write the verification report to: `{{.VerifyPath}}`
+You MUST write the completed verification report to:
+`{{.VerifyPath}}`
+The next workflow phase depends on this file existing.
 {{- if .RetryMode}}
 
 ---

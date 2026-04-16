@@ -524,8 +524,8 @@ func TestReviewPromptParityWithBash(t *testing.T) {
 		"### Phase Assessment",
 		"### Verdict",
 		"One of: **APPROVE** | **APPROVE WITH CHANGES** | **REQUEST REWORK**",
-		"You MUST write your review to: `" + reviewPath + "`",
-		"The implementation phase depends on this file.",
+		"You MUST write the completed review report to:\n`" + reviewPath + "`",
+		"The implementation phase depends on this file existing.",
 	}
 
 	for _, block := range parityBlocks {
@@ -563,6 +563,8 @@ func TestImplementPromptParityWithBash(t *testing.T) {
 		"`" + filepath.Join(wfDir, "review.md") + "`",
 		"`" + filepath.Join(wfDir, "implement.md") + "`",
 		"Run tests after implementation to confirm test gates pass",
+		"You MUST write the completed implementation summary to:\n`" + filepath.Join(wfDir, "implement.md") + "`",
+		"The next workflow phase depends on this file existing.",
 	}
 
 	for _, block := range parityBlocks {
@@ -606,7 +608,8 @@ func TestVerifyPromptParityWithBash(t *testing.T) {
 		"One of: **Ship it** | **Fix issues first** | **Needs rework**",
 		"**Original plan:** `" + filepath.Join(wfDir, "plan.md") + "`",
 		"**Review notes:** `" + filepath.Join(wfDir, "review.md") + "`",
-		"You MUST write the verification report to: `" + filepath.Join(wfDir, "verify.md") + "`",
+		"You MUST write the completed verification report to:\n`" + filepath.Join(wfDir, "verify.md") + "`",
+		"The next workflow phase depends on this file existing.",
 	}
 
 	for _, block := range parityBlocks {

@@ -33,8 +33,10 @@ Include:
 - Any deviations from the plan and why
 - Test results
 
-This file signals that the implementation phase is complete.
-The next phase (verification by a second AI model) depends on this file.
+## CRITICAL
+You MUST write the completed implementation summary to:
+`{{.ImplReportPath}}`
+The next workflow phase depends on this file existing.
 {{- if .RetryMode}}
 
 ---

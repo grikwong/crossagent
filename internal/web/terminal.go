@@ -59,10 +59,11 @@ type phaseCmdResult struct {
 	} `json:"agent"`
 	Command     string   `json:"command"`
 	Args        []string `json:"args"`
-	Cwd         string   `json:"cwd"`
-	WorkflowDir string   `json:"workflow_dir"`
-	OutputFile  string   `json:"output_file"`
-	Error       string   `json:"error"`
+	Cwd              string   `json:"cwd"`
+	WorkflowDir      string   `json:"workflow_dir"`
+	OutputFile       string   `json:"output_file"`
+	ExtractionStatus string   `json:"extraction_status"`
+	Error            string   `json:"error"`
 }
 
 // connWriteMu provides per-connection write serialization.
@@ -353,9 +354,10 @@ func handleSpawn(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsM
 	cs.mu.Unlock()
 
 	wsSend(ws, "spawned", map[string]any{
-		"pid":       cmd.Process.Pid,
-		"sessionID": session.ID,
-		"adapter":   phaseCmd.Agent.Adapter,
+		"pid":               cmd.Process.Pid,
+		"sessionID":         session.ID,
+		"adapter":           phaseCmd.Agent.Adapter,
+		"extraction_status": phaseCmd.ExtractionStatus,
 	})
 
 	// Read PTY output in a goroutine, broadcast to all viewers.

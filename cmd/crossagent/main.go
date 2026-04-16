@@ -123,7 +123,7 @@ func main() {
 		cmdPhaseCmd(args)
 	case "use":
 		cmdUse(args)
-	case "next":
+	case "next", "resume":
 		cmdNext(args)
 	case "advance":
 		cmdAdvance(args)
@@ -314,7 +314,7 @@ func cmdPlan(args []string) {
 	separator()
 
 	info(fmt.Sprintf("Agent:   %s (%s)", ag.Name, ag.DisplayName))
-	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs)
+	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs, "plan")
 
 	fmt.Fprintln(os.Stderr)
 	if fileExists(filepath.Join(d, "plan.md")) {
@@ -365,7 +365,7 @@ func cmdReview(args []string) {
 	separator()
 
 	info(fmt.Sprintf("Agent:   %s (%s)", ag.Name, ag.DisplayName))
-	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs)
+	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs, "review")
 
 	fmt.Fprintln(os.Stderr)
 	if fileExists(filepath.Join(d, "review.md")) {
@@ -435,7 +435,7 @@ func cmdImplement(args []string) {
 	info(fmt.Sprintf("Prompt:  %s", promptFile))
 
 	info(fmt.Sprintf("Agent:   %s (%s)", ag.Name, ag.DisplayName))
-	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs)
+	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs, "implement")
 
 	fmt.Fprintln(os.Stderr)
 	success("Implementation session complete")
@@ -478,7 +478,7 @@ func cmdVerify(args []string) {
 	separator()
 
 	info(fmt.Sprintf("Agent:   %s (%s)", ag.Name, ag.DisplayName))
-	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs)
+	launchAgentOrDie(ag, cfg.Repo, promptFile, d, cfg.AddDirs, "verify")
 
 	fmt.Fprintln(os.Stderr)
 	if fileExists(filepath.Join(d, "verify.md")) {
@@ -529,7 +529,7 @@ func cmdStatus(args []string) {
 	phaseLabel := state.PhaseLabel(phase)
 
 	retryCount := confInt(d, "retry_count", 0)
-	maxRetries := confInt(d, "max_retries", 10)
+	maxRetries := confInt(d, "max_retries", 25)
 
 	planAg := getPhaseAgentOrDie(d, "plan")
 	reviewAg := getPhaseAgentOrDie(d, "review")
@@ -833,6 +833,39 @@ func cmdAdvance(args []string) {
 	}
 
 	pn := state.PhaseNum(phase)
+
+	// Verdict gate: from review (2) or verify (4), refuse to advance
+	// unless the phase artifact exists and parses to an approval. This
+	// prevents a half-state where the UI bumped the phase before
+	// supervise got a chance to revert on a REQUEST REWORK verdict —
+	// which is how the crossagent-meta-orchestrator workflow got stuck
+	// at phase=3 with no review.md. Callers that want to force an
+	// advance despite a rework verdict can still do so via `revert`.
+	// The gate only fires when the artifact exists AND parses to a
+	// rework/fix verdict — a missing artifact preserves the legacy
+	// behavior that lets `advance` act as a raw phase bump (used by
+	// integration tests and the CLI-only dry-advance path).
+	switch pn {
+	case 2:
+		if fileExists(filepath.Join(d, "review.md")) {
+			v, raw, _ := judge.JudgeReview(filepath.Join(d, "review.md"))
+			if v == judge.Rework {
+				warn(fmt.Sprintf("Review verdict is %q — refusing to advance. Use `crossagent supervise --phase review` to route the revert, or `crossagent revert 1` to retry planning.",
+					raw))
+				return
+			}
+		}
+	case 4:
+		if fileExists(filepath.Join(d, "verify.md")) {
+			v, status, rec, _ := judge.JudgeVerify(filepath.Join(d, "verify.md"))
+			if v == judge.Rework || v == judge.Fix {
+				warn(fmt.Sprintf("Verify verdict is %q (status=%q, rec=%q) — refusing to advance. Use `crossagent supervise --phase verify` to route the revert.",
+					v, status, rec))
+				return
+			}
+		}
+	}
+
 	next := pn + 1
 	if next > 4 {
 		state.SetPhase(d, "done")
@@ -2302,7 +2335,7 @@ func cmdRevert(args []string) {
 	}
 
 	retryCount := confInt(d, "retry_count", 0)
-	maxRetries := confInt(d, "max_retries", 10)
+	maxRetries := confInt(d, "max_retries", 25)
 
 	if retryCount >= maxRetries {
 		if jsonMode {
@@ -2465,7 +2498,7 @@ func cmdSupervise(args []string) {
 	_, d := resolveWorkflow(workflow, jsonMode)
 
 	retryCount := confInt(d, "retry_count", 0)
-	maxRetries := confInt(d, "max_retries", 10)
+	maxRetries := confInt(d, "max_retries", 25)
 
 	if supervisePhase == "" {
 		if fileExists(filepath.Join(d, "verify.md")) {
@@ -2929,6 +2962,7 @@ func usage() {
 
   NAVIGATION
     next                  Run the next pending phase
+    resume                Alias for 'next'
     status                Show current workflow state
     list                  List all workflows
     use <name>            Switch active workflow
@@ -3077,7 +3111,8 @@ func printPhaseCmdJSON(r *agent.PhaseCmdResult) error {
 	fmt.Fprintf(&buf, "  \"phase\": %d,\n", r.Phase)
 	fmt.Fprintf(&buf, "  \"phase_label\": %s,\n", js(r.PhaseLabel))
 	fmt.Fprintf(&buf, "  \"workflow\": %s,\n", js(r.Workflow))
-	fmt.Fprintf(&buf, "  \"workflow_dir\": %s\n", js(r.WorkflowDir))
+	fmt.Fprintf(&buf, "  \"workflow_dir\": %s,\n", js(r.WorkflowDir))
+	fmt.Fprintf(&buf, "  \"extraction_status\": %s\n", js(string(r.ExtractionStatus)))
 	buf.WriteString("}\n")
 
 	_, err := os.Stdout.Write(buf.Bytes())
@@ -3215,13 +3250,13 @@ func makeChatHistoryEntry(path string) cli.ChatHistoryEntry {
 	return cli.ChatHistoryEntry{Exists: true, Path: path, Size: info.Size()}
 }
 
-func launchAgentOrDie(ag *agent.Agent, repo, promptFile, wfDir string, addDirs []string) {
+func launchAgentOrDie(ag *agent.Agent, repo, promptFile, wfDir string, addDirs []string, phaseKey string) {
 	cfg := readConfigOrDie(wfDir)
 	projectMemDir := ""
 	if cfg.Project != "" {
 		projectMemDir = state.ProjectMemoryDir(cfg.Project)
 	}
-	err := agent.LaunchAgent(ag, repo, promptFile, wfDir, addDirs, projectMemDir)
+	err := agent.LaunchAgent(ag, repo, promptFile, wfDir, addDirs, projectMemDir, phaseKey)
 	// Match bash: don't propagate exit code as fatal (|| true)
 	_ = err
 }

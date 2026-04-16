@@ -299,6 +299,10 @@ assert_json "phase-cmd plan --json has phase=1" \
   "assert d['phase']==1" \
   "$BINARY" phase-cmd plan --json
 
+assert_json "phase-cmd plan --json has extraction_status=ok" \
+  "assert d['extraction_status']=='ok'" \
+  "$BINARY" phase-cmd plan --json
+
 # Verify prompt files were generated
 PROMPT_DIR="$CROSSAGENT_HOME/workflows/revert-wf/prompts"
 total=$((total + 1))
@@ -336,6 +340,57 @@ if grep -q "General Instructions" "$PROMPT_DIR/general.md" 2>/dev/null; then
 else
   fail=$((fail + 1)); printf "  ✗ general.md contains 'General Instructions' section\n" >&2
 fi
+
+# ── 8b. Extraction status diagnostics ────────────────────────────────────────
+# Degraded-sandbox signal surfaced via phase-cmd --json. Each case crafts
+# plan.md such that `review` phase extraction classifies it as missing,
+# empty, or malformed — confirming the CLI JSON contract consumed by the
+# Web UI correctly distinguishes degraded extractions from healthy ones.
+
+echo ""
+echo "  Section 8b: Extraction status diagnostics"
+
+echo "Extraction test" | "$BINARY" new extraction-wf --repo /tmp 2>/dev/null
+EXT_DIR="$CROSSAGENT_HOME/workflows/extraction-wf"
+
+# Advance to phase 2 so `phase-cmd review` passes preconditions.
+"$BINARY" use extraction-wf 2>/dev/null
+"$BINARY" advance 2>/dev/null
+
+# Case 1: plan.md present but no "Affected Files" header → missing
+cat > "$EXT_DIR/plan.md" <<'EOF'
+# Plan
+
+Some content without an Affected Files header.
+EOF
+assert_json "extraction_status=missing when header absent" \
+  "assert d['extraction_status']=='missing'" \
+  "$BINARY" phase-cmd review --workflow extraction-wf --json
+
+# Case 2: Affected Files header present but section has no entries → empty
+cat > "$EXT_DIR/plan.md" <<'EOF'
+# Plan
+
+## Affected Files
+
+EOF
+assert_json "extraction_status=empty when section empty" \
+  "assert d['extraction_status']=='empty'" \
+  "$BINARY" phase-cmd review --workflow extraction-wf --json
+
+# Case 3: repo-root token in Affected Files → rejected, classified malformed.
+# Backticked `.` bypasses pathishRE so it reaches ValidatePath where
+# repo-root entries are rejected, landing in InvalidEntries (malformed).
+cat > "$EXT_DIR/plan.md" <<'EOF'
+# Plan
+
+## Affected Files
+
+- `.`
+EOF
+assert_json "extraction_status=malformed when repo-root rejected" \
+  "assert d['extraction_status']=='malformed'" \
+  "$BINARY" phase-cmd review --workflow extraction-wf --json
 
 # ── 9. Done ───────────────────────────────────────────────────────────────────
 

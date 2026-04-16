@@ -98,5 +98,40 @@ func AutoSelectAll(wfDir string) (map[string]string, error) {
 	for _, phase := range []string{"plan", "review", "implement", "verify"} {
 		out[phase] = RecommendAgent(phase, agents)
 	}
+
+	// Enforce maker-checker diversity: implement must differ in family
+	// from both review and verify. Re-pick the checker slot from the
+	// next-best candidate of a different family when a collision is
+	// detected. Implement is the anchor (maker); checkers are swapped.
+	implFamily, _ := AgentFamily(out["implement"])
+	if implFamily != "" {
+		for _, checker := range []string{"review", "verify"} {
+			curFamily, _ := AgentFamily(out[checker])
+			if curFamily != implFamily {
+				continue
+			}
+			if alt := pickDifferentFamily(checker, agents, implFamily); alt != "" {
+				out[checker] = alt
+			}
+		}
+	}
+
 	return out, nil
+}
+
+// pickDifferentFamily returns the best agent for phase whose family
+// differs from avoidFamily. It filters the agent list to candidates of
+// a different family and re-runs RecommendAgent so the usual per-phase
+// priority ordering is preserved. Returns "" if no candidate exists.
+func pickDifferentFamily(phase string, agents []Agent, avoidFamily string) string {
+	filtered := make([]Agent, 0, len(agents))
+	for _, a := range agents {
+		if fam, ok := AgentFamily(a.Name); ok && fam != avoidFamily {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	return RecommendAgent(phase, filtered)
 }

@@ -38,7 +38,10 @@ func TestHandleWorkflowCheckFile_RecoversSandboxFallback(t *testing.T) {
 	}
 
 	misplaced := filepath.Join(repo, "plan.md")
-	if err := os.WriteFile(misplaced, []byte("# plan\n"), 0644); err != nil {
+	// Content must be substantive enough for RecoverMisplacedOutput to
+	// promote it (markdown header + ≥ minSubstantiveSize bytes).
+	planBody := "# plan\n\n" + strings.Repeat("real planning content.\n", 20)
+	if err := os.WriteFile(misplaced, []byte(planBody), 0644); err != nil {
 		t.Fatal(err)
 	}
 

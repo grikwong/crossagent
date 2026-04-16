@@ -16,6 +16,7 @@ func setupTestHome(t *testing.T) string {
 	os.MkdirAll(filepath.Join(dir, "agents"), 0755)
 	os.MkdirAll(filepath.Join(dir, "workflows"), 0755)
 	os.MkdirAll(filepath.Join(dir, "projects", "default", "memory"), 0755)
+	os.MkdirAll(filepath.Join(dir, "memory"), 0755)
 
 	return dir
 }
@@ -405,6 +406,55 @@ func TestResetPhaseAgent(t *testing.T) {
 	}
 	if a.Name != "claude" {
 		t.Errorf("expected default 'claude' after reset, got %q", a.Name)
+	}
+}
+
+func TestCheckModelDiversity_RejectsSameFamilyCheckerAfterMaker(t *testing.T) {
+	setupTestHome(t)
+	wfDir := t.TempDir()
+
+	if err := SetPhaseAgent(wfDir, "implement", "claude"); err != nil {
+		t.Fatalf("SetPhaseAgent(implement, claude): %v", err)
+	}
+	// Both checkers (review/verify) are anthropic — should be rejected.
+	if err := SetPhaseAgent(wfDir, "review", "claude"); err == nil {
+		t.Error("expected review=claude to be rejected when implement=claude")
+	}
+	if err := SetPhaseAgent(wfDir, "verify", "claude"); err == nil {
+		t.Error("expected verify=claude to be rejected when implement=claude")
+	}
+	// Different family should pass.
+	if err := SetPhaseAgent(wfDir, "review", "codex"); err != nil {
+		t.Errorf("expected review=codex to be accepted, got %v", err)
+	}
+}
+
+func TestCheckModelDiversity_RejectsSameFamilyMakerAfterChecker(t *testing.T) {
+	setupTestHome(t)
+	wfDir := t.TempDir()
+
+	if err := SetPhaseAgent(wfDir, "review", "codex"); err != nil {
+		t.Fatalf("SetPhaseAgent(review, codex): %v", err)
+	}
+	// Reverse direction: setting implement must see review's family.
+	if err := SetPhaseAgent(wfDir, "implement", "codex"); err == nil {
+		t.Error("expected implement=codex to be rejected when review=codex")
+	}
+	if err := SetPhaseAgent(wfDir, "implement", "claude"); err != nil {
+		t.Errorf("expected implement=claude to be accepted, got %v", err)
+	}
+}
+
+func TestCheckModelDiversity_PlanHasNoConstraint(t *testing.T) {
+	setupTestHome(t)
+	wfDir := t.TempDir()
+
+	if err := SetPhaseAgent(wfDir, "implement", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	// Plan may share a family with any phase.
+	if err := SetPhaseAgent(wfDir, "plan", "claude"); err != nil {
+		t.Errorf("plan should not be diversity-constrained, got %v", err)
 	}
 }
 

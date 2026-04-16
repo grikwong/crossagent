@@ -236,12 +236,88 @@ func SetPhaseAgent(wfDir, phase, agentName string) error {
 		return err
 	}
 
-	confKey, err := PhaseAgentConfKey(phase)
+	phaseKey, err := state.PhaseKey(phase)
+	if err != nil {
+		return err
+	}
+
+	if err := CheckModelDiversity(wfDir, phaseKey, agentName); err != nil {
+		return err
+	}
+
+	confKey, err := PhaseAgentConfKey(phaseKey)
 	if err != nil {
 		return err
 	}
 
 	return state.SetConf(wfDir, confKey, agentName)
+}
+
+// AgentFamily resolves the model family for an agent by looking up its
+// underlying adapter. Returns ("", false) if the agent or its adapter
+// is not registered.
+func AgentFamily(agentName string) (string, bool) {
+	ag, err := GetAgent(agentName)
+	if err != nil {
+		return "", false
+	}
+	ad, ok := AdapterFor(ag.Adapter)
+	if !ok {
+		return "", false
+	}
+	return ad.Family(), true
+}
+
+// CheckModelDiversity enforces the maker-checker invariant: the
+// implement agent (maker) must not share a model family with either
+// the review or verify agent (checkers). The check is symmetric —
+// setting review or verify also checks against the current implement
+// assignment. Plan has no diversity constraint.
+//
+// candidate is the agent being assigned to phaseKey. phaseKey must be
+// a canonical phase ("plan", "review", "implement", "verify").
+func CheckModelDiversity(wfDir, phaseKey, candidate string) error {
+	candFamily, ok := AgentFamily(candidate)
+	if !ok {
+		// Unknown family — skip the check; SetPhaseAgent's GetAgent
+		// call already verified the agent exists.
+		return nil
+	}
+
+	var counterparts []string
+	switch phaseKey {
+	case "implement":
+		counterparts = []string{"review", "verify"}
+	case "review", "verify":
+		counterparts = []string{"implement"}
+	default:
+		return nil
+	}
+
+	for _, other := range counterparts {
+		otherKey := other + "_agent"
+		otherName, err := state.GetConf(wfDir, otherKey)
+		if err != nil {
+			return err
+		}
+		if otherName == "" {
+			// Only enforce against explicitly persisted counterparts;
+			// otherwise first-time phase assignments would trip over
+			// defaults that the user is about to overwrite.
+			continue
+		}
+		otherFamily, ok := AgentFamily(otherName)
+		if !ok {
+			continue
+		}
+		if otherFamily == candFamily {
+			return fmt.Errorf(
+				"model diversity violation: %s agent %q (family %q) conflicts with %s agent %q (family %q); maker and checker must use different model families",
+				phaseKey, candidate, candFamily, other, otherName, otherFamily,
+			)
+		}
+	}
+	return nil
 }
 
 // ResetPhaseAgent resets a phase's agent to the default.

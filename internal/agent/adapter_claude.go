@@ -24,6 +24,7 @@ type claudeAdapter struct{}
 func (claudeAdapter) Name() string           { return "claude" }
 func (claudeAdapter) DisplayName() string    { return "Claude Code" }
 func (claudeAdapter) DefaultCommand() string { return "claude" }
+func (claudeAdapter) Family() string         { return "anthropic" }
 
 func (claudeAdapter) Plan(ctx *LaunchContext) (*LaunchPlan, error) {
 	settingsFile, err := writeClaudeSandboxSettings(ctx)
@@ -66,7 +67,29 @@ func writeClaudeSandboxSettings(ctx *LaunchContext) (string, error) {
 		return p
 	}
 
-	allowWrite := []string{formatPath(ctx.Repo)}
+	var allowWrite []string
+	if ctx.PhaseKey == "implement" {
+		// Fail closed: implement writes are pinned to the reviewed file
+		// list (union of plan.md + review.md affected-files sections).
+		// Empty means no repo writes are authorized — we deliberately do
+		// NOT fall back to the repo root, because that would restore
+		// blanket repo-wide writes and defeat the sandbox.
+		// Defensive assertion: judge.ExtractAffectedFiles is the
+		// canonicalization boundary. Re-check so we fail closed if a
+		// future caller populates AffectedFiles from a different source.
+		for _, f := range ctx.AffectedFiles {
+			if _, ok := assertUnderRepo(ctx.Repo, f); !ok {
+				continue
+			}
+			allowWrite = append(allowWrite, formatPath(f))
+		}
+		// Always allow writing the implement.md report in the workflow dir.
+		allowWrite = append(allowWrite, formatPath(filepath.Join(ctx.WorkflowDir, "implement.md")))
+	} else {
+		// Default: allow writing to repo and all workspace dirs
+		allowWrite = []string{formatPath(ctx.Repo)}
+	}
+
 	for _, d := range ctx.AllDirs {
 		allowWrite = append(allowWrite, formatPath(d))
 	}

@@ -46,6 +46,13 @@ Every workflow builds knowledge. Crossagent maintains **three tiers of persisten
 
 Crossagent runs on top of CLI tools that use **subscription-based plans** (Claude Code via Claude Pro/Max, Codex CLI via ChatGPT Pro), not per-token API billing. No surprise invoices, no cost anxiety mid-workflow. You know what you're paying before you start.
 
+### Advanced Features
+
+- **Atomic State Management**: All state transitions (phase bumps, configuration changes, memory updates) use atomic writes and file locking. This prevents data corruption even if the CLI and Web UI access the same workflow simultaneously.
+- **Multi-Round Iteration**: Finished a feature? Use the **Follow-up** feature to archive all current artifacts into a numbered "round" and reset to Phase 1. Subsequent rounds automatically carry over relevant context from previous iterations.
+- **Searchable Workflow Picker**: Manage hundreds of workflows with ease using the project-grouped, searchable picker. Supports type-to-filter and full keyboard navigation.
+- **Deep Observability**: Every retry attempt is preserved. View archived `plan.md` versions and their corresponding chat logs directly in the Web UI to understand exactly why a phase was retried.
+
 ## Installation
 
 ### Prerequisites
@@ -304,7 +311,7 @@ State is stored in `~/.crossagent/` — workflows, projects, agents, and memory 
 
 **Web UI not loading** — Check if port 3456 is already in use: `lsof -i :3456`. Use `CROSSAGENT_PORT=8080 crossagent serve` to specify an alternate port. If the binary was built without the embedded frontend, rebuild with `make build`.
 
-**Permission errors on `~/.crossagent/`** — Ensure the directory is owned by your user: `ls -la ~/.crossagent`. Fix with `chown -R $(whoami) ~/.crossagent` if needed.
+**Permission errors on `~/.crossagent/`** — Crossagent now automatically canonicalizes all symlinks (resolving `/Users` vs `/private/var/users` on macOS) and explicitly authorizes the `~/.crossagent` home directory to avoid sandbox write failures. If issues persist, ensure the directory is owned by your user: `ls -la ~/.crossagent`. Fix with `chown -R $(whoami) ~/.crossagent` if needed.
 
 **PTY session failures** — PTY allocation requires a Unix-like OS (macOS or Linux). Windows is not natively supported; use WSL. If PTY errors persist, ensure your terminal emulator supports pseudo-terminals.
 

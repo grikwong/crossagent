@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/grikwong/crossagent/internal/state"
 )
@@ -27,6 +28,7 @@ type Adapter interface {
 	Name() string           // stable identifier, e.g. "gemini"
 	DisplayName() string    // human-readable label, e.g. "Google Gemini"
 	DefaultCommand() string // executable to exec when agent.Command is empty
+	Family() string         // model family, e.g. "anthropic", "openai", "google"
 
 	// Plan builds the launch shape for the given context. The adapter
 	// owns any side effects (e.g. writing a sandbox settings JSON) and
@@ -35,14 +37,48 @@ type Adapter interface {
 	Plan(ctx *LaunchContext) (*LaunchPlan, error)
 }
 
+// ExtractionStatus classifies the health of the "Affected Files"
+// extraction used to build the adapter sandbox. It is surfaced via
+// LaunchContext and PhaseCmdResult so direct-CLI and Web UI consumers
+// can warn the operator when the sandbox is degraded (e.g. plan.md
+// missing a parseable Affected Files section leads to an empty
+// implement sandbox).
+//
+// The values are content-aware: "malformed" means the source file had
+// an Affected Files section with bullets that looked like paths but
+// none survived validation, and is distinct from "empty" (well-formed
+// but no paths listed) and "missing" (no Affected Files section at all,
+// or the source file itself is absent).
+type ExtractionStatus string
+
+const (
+	// ExtractionOK — at least one valid path was extracted, or the
+	// phase has no extraction requirement (e.g. plan phase).
+	ExtractionOK ExtractionStatus = "ok"
+	// ExtractionMissing — the source file is absent or contains no
+	// Affected Files section.
+	ExtractionMissing ExtractionStatus = "missing"
+	// ExtractionEmpty — an Affected Files section was found but was
+	// well-formed and empty (no bullets).
+	ExtractionEmpty ExtractionStatus = "empty"
+	// ExtractionMalformed — an Affected Files section was found with
+	// bullet content that failed path validation (e.g. prose, repo-
+	// root tokens, escape attempts). No valid paths resulted.
+	ExtractionMalformed ExtractionStatus = "malformed"
+)
+
 // LaunchContext aggregates every input an adapter could need to build a
 // launch. It is constructed once per launch and passed to Plan; adapters
 // read what they need and ignore the rest. Adding a new field here is
 // backward compatible — existing adapters simply don't reference it.
 type LaunchContext struct {
-	Repo        string // agent working directory / project root
-	WorkflowDir string // ~/.crossagent/workflows/<name>/
-	PromptFile  string // absolute path to the generated phase prompt
+	Repo             string           // agent working directory / project root
+	WorkflowDir      string           // ~/.crossagent/workflows/<name>/
+	PromptFile       string           // absolute path to the generated phase prompt
+	RepoOverride     string           // absolute path to the staged shadow repo (optional)
+	AffectedFiles    []string         // validated list of files the agent is allowed to edit
+	PhaseKey         string           // "plan", "review", "implement", "verify"
+	ExtractionStatus ExtractionStatus // diagnostic for the Affected Files extraction that produced AffectedFiles
 	// AllDirs is the ordered list of directories the agent should be
 	// able to access — typically {WorkflowDir, GlobalMemoryDir,
 	// ProjectMemDir (if present), AddDirs…}. Each adapter translates
@@ -53,9 +89,10 @@ type LaunchContext struct {
 }
 
 // LaunchPlan is the adapter's answer to "how do I launch this agent?"
-// — the argv (minus argv[0]), the prompt text for display, and an
-// optional working directory override.
+// — the command to execute, the argv (minus argv[0]), the prompt text
+// for display, and an optional working directory override.
 type LaunchPlan struct {
+	Command string
 	Args    []string
 	Prompt  string
 	WorkDir string
@@ -64,49 +101,102 @@ type LaunchPlan struct {
 // NewLaunchContext assembles a LaunchContext from the raw parameters
 // that crossagent propagates through its phase-runner plumbing. It
 // centralizes the rules for which directories an agent is granted
-// access to (workflow dir → global memory → project memory → add_dirs)
-// so every adapter sees a consistent ordered list.
-func NewLaunchContext(repo, wfDir, promptFile string, addDirs []string, projectMemDir string) *LaunchContext {
-	dirs := []string{}
-	
-	if abs, err := filepath.Abs(wfDir); err == nil {
-		dirs = append(dirs, abs)
-	}
-	if abs, err := filepath.Abs(state.GlobalMemoryDir()); err == nil {
-		dirs = append(dirs, abs)
+// access to (workflow dir → home dir → global memory → project memory → add_dirs)
+// so every adapter sees a consistent ordered list of resolved paths.
+func NewLaunchContext(repo, wfDir, promptFile string, addDirs []string, projectMemDir string, affectedFiles []string, phaseKey string, extractionStatus ExtractionStatus) *LaunchContext {
+	// resolve returns the absolute, symlink-evaluated version of p.
+	// This is critical for macOS seatbelt sandboxes which often fail
+	// on non-canonical paths (e.g. /Users vs /private/var/users).
+	resolve := func(p string) string {
+		if abs, err := filepath.EvalSymlinks(p); err == nil {
+			return abs
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
 	}
 
+	rawDirs := []string{}
+	// 1. Workflow directory (ALWAYS first slot for tools like gemini)
+	rawDirs = append(rawDirs, resolve(wfDir))
+
+	// 2. Crossagent home directory (broad coverage for all state)
+	rawDirs = append(rawDirs, resolve(state.Home()))
+
+	// 3. Global memory directory
+	rawDirs = append(rawDirs, resolve(state.GlobalMemoryDir()))
+
+	// 4. Project memory directory
 	if projectMemDir != "" {
 		if info, err := os.Stat(projectMemDir); err == nil && info.IsDir() {
-			if abs, err := filepath.Abs(projectMemDir); err == nil {
-				dirs = append(dirs, abs)
-			}
+			rawDirs = append(rawDirs, resolve(projectMemDir))
 		}
-	}
-	for _, d := range addDirs {
-		if d != "" {
-			if abs, err := filepath.Abs(d); err == nil {
-				dirs = append(dirs, abs)
-			}
-		}
-	}
-	
-	absRepo := repo
-	if abs, err := filepath.Abs(repo); err == nil {
-		absRepo = abs
-	}
-	
-	absPrompt := promptFile
-	if abs, err := filepath.Abs(promptFile); err == nil {
-		absPrompt = abs
 	}
 
-	return &LaunchContext{
-		Repo:        absRepo,
-		WorkflowDir: wfDir,
-		PromptFile:  absPrompt,
-		AllDirs:     dirs,
+	// 5. Additional user-specified directories
+	for _, d := range addDirs {
+		if d != "" {
+			rawDirs = append(rawDirs, resolve(d))
+		}
 	}
+	
+	// Deduplicate and consolidate while preserving order.
+	// We keep a directory if it is not already covered by a parent
+	// directory that appeared EARLIER in the list.
+	unique := []string{}
+	for _, d := range rawDirs {
+		isSub := false
+		for _, existing := range unique {
+			rel, err := filepath.Rel(existing, d)
+			if err == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
+				isSub = true
+				break
+			}
+		}
+		if !isSub {
+			unique = append(unique, d)
+		}
+	}
+	
+	resolvedAffected := []string{}
+	for _, f := range affectedFiles {
+		resolvedAffected = append(resolvedAffected, resolve(f))
+	}
+	
+	return &LaunchContext{
+		Repo:             resolve(repo),
+		WorkflowDir:      resolve(wfDir),
+		PromptFile:       resolve(promptFile),
+		AllDirs:          unique,
+		AffectedFiles:    resolvedAffected,
+		PhaseKey:         phaseKey,
+		ExtractionStatus: extractionStatus,
+	}
+}
+
+// assertUnderRepo is a defensive check used by adapter sandbox builders.
+// It returns (cleaned, true) when p resolves to an absolute path within
+// repo. Canonicalization is centralized in judge.ExtractAffectedFiles;
+// this helper fails closed if a non-canonical entry ever reaches an
+// adapter.
+func assertUnderRepo(repo, p string) (string, bool) {
+	if !filepath.IsAbs(p) {
+		return "", false
+	}
+	absRepo := repo
+	if a, err := filepath.Abs(repo); err == nil {
+		absRepo = a
+	}
+	cleaned := filepath.Clean(p)
+	rel, err := filepath.Rel(absRepo, cleaned)
+	if err != nil {
+		return "", false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return cleaned, true
 }
 
 // ── Registry ────────────────────────────────────────────────────────────────

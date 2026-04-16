@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/grikwong/crossagent/internal/judge"
 	"github.com/grikwong/crossagent/internal/prompt"
 	"github.com/grikwong/crossagent/internal/state"
 )
@@ -20,17 +21,22 @@ const (
 // PhaseCmdResult holds the launch parameters for a phase command.
 // Matches the JSON schema consumed by the Web UI.
 type PhaseCmdResult struct {
-	Agent       PhaseCmdAgent `json:"agent"`
-	Command     string        `json:"command"`
-	Args        []string      `json:"args"`
-	Cwd         string        `json:"cwd"`
-	Prompt      string        `json:"prompt"`
-	PromptFile  string        `json:"prompt_file"`
-	OutputFile  *string       `json:"output_file"` // null when absent
-	Phase       int           `json:"phase"`
-	PhaseLabel  string        `json:"phase_label"`
-	Workflow    string        `json:"workflow"`
-	WorkflowDir string        `json:"workflow_dir"`
+	Agent       PhaseCmdAgent    `json:"agent"`
+	Command     string           `json:"command"`
+	Args        []string         `json:"args"`
+	Cwd         string           `json:"cwd"`
+	Prompt      string           `json:"prompt"`
+	PromptFile  string           `json:"prompt_file"`
+	OutputFile  *string          `json:"output_file"` // null when absent
+	Phase       int              `json:"phase"`
+	PhaseLabel  string           `json:"phase_label"`
+	Workflow    string           `json:"workflow"`
+	WorkflowDir string           `json:"workflow_dir"`
+	// ExtractionStatus reports the health of the Affected Files
+	// extraction that constrained the adapter sandbox. Web UI / CLI
+	// consumers render a warning when this is anything other than
+	// "ok" so the operator knows the sandbox may be degraded.
+	ExtractionStatus ExtractionStatus `json:"extraction_status"`
 }
 
 // PhaseCmdAgent is the nested agent object in phase-cmd JSON.
@@ -45,7 +51,7 @@ type PhaseCmdAgent struct {
 // package-level helper because external callers and tests rely on it;
 // new adapter code should consume LaunchContext.AllDirs directly.
 func BuildLaunchArgs(wfDir string, addDirs []string, projectMemDir string) []string {
-	ctx := NewLaunchContext("", wfDir, "", addDirs, projectMemDir)
+	ctx := NewLaunchContext("", wfDir, "", addDirs, projectMemDir, nil, "", ExtractionOK)
 	args := make([]string, 0, 2*len(ctx.AllDirs))
 	for _, d := range ctx.AllDirs {
 		args = append(args, "--add-dir", d)
@@ -56,7 +62,7 @@ func BuildLaunchArgs(wfDir string, addDirs []string, projectMemDir string) []str
 // GenSandboxSettings is retained for backward compatibility. New code
 // should go through claudeAdapter.Plan, which writes the same file.
 func GenSandboxSettings(wfDir, repo string, addDirs []string, projectMemDir string) (string, error) {
-	ctx := NewLaunchContext(repo, wfDir, "", addDirs, projectMemDir)
+	ctx := NewLaunchContext(repo, wfDir, "", addDirs, projectMemDir, nil, "", ExtractionOK)
 	return writeClaudeSandboxSettings(ctx)
 }
 
@@ -99,7 +105,7 @@ func RequireAgentCommand(agent *Agent) error {
 // All adapter-specific launch shaping (argv, sandbox side effects,
 // prompt construction) lives in the Adapter implementation — this
 // function only knows how to call Plan() and exec the result.
-func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string, projectMemDir string) error {
+func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string, projectMemDir string, phaseKey string) error {
 	if err := RequireAgentCommand(agent); err != nil {
 		return err
 	}
@@ -109,7 +115,16 @@ func LaunchAgent(agent *Agent, repo, promptFile, wfDir string, addDirs []string,
 		return fmt.Errorf("unsupported agent adapter '%s' for agent '%s'", agent.Adapter, agent.Name)
 	}
 
-	ctx := NewLaunchContext(repo, wfDir, promptFile, addDirs, projectMemDir)
+	affectedFiles, extractionStatus, err := extractAffectedFilesForPhase(wfDir, repo, phaseKey)
+	if err != nil {
+		return fmt.Errorf("failed to extract affected files for %s: %w", phaseKey, err)
+	}
+	if extractionStatus != ExtractionOK {
+		fmt.Fprintf(os.Stderr, "%sWARNING:%s degraded sandbox for %s phase (extraction status: %s). The agent may not have write access to all intended files.\n",
+			ansiBold, ansiReset, phaseKey, extractionStatus)
+	}
+
+	ctx := NewLaunchContext(repo, wfDir, promptFile, addDirs, projectMemDir, affectedFiles, phaseKey, extractionStatus)
 	plan, err := ad.Plan(ctx)
 	if err != nil {
 		return err
@@ -178,7 +193,12 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 		}
 	}
 
-	ctx := NewLaunchContext(cfg.Repo, wfDir, promptFile, cfg.AddDirs, projectMemDir)
+	affectedFiles, extractionStatus, err := extractAffectedFilesForPhase(wfDir, cfg.Repo, phaseKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract affected files for %s: %w", phaseKey, err)
+	}
+
+	ctx := NewLaunchContext(cfg.Repo, wfDir, promptFile, cfg.AddDirs, projectMemDir, affectedFiles, phaseKey, extractionStatus)
 	plan, err := ad.Plan(ctx)
 	if err != nil {
 		return nil, err
@@ -199,8 +219,9 @@ func BuildPhaseCmd(wfDir, wfName, phase string, force bool, implPhase int) (*Pha
 		OutputFile:  &outputFile,
 		Phase:       targetPhase,
 		PhaseLabel:  state.PhaseLabel(phaseID),
-		Workflow:    wfName,
-		WorkflowDir: wfDir,
+		Workflow:         wfName,
+		WorkflowDir:      wfDir,
+		ExtractionStatus: extractionStatus,
 	}, nil
 }
 
@@ -243,6 +264,65 @@ func resolveTargetPhase(wfDir, phaseKey string, pn int, force bool) (int, string
 		return 4, filepath.Join(wfDir, "verify.md"), nil
 	}
 	return 0, "", fmt.Errorf("unknown phase: %s", phaseKey)
+}
+
+// extractAffectedFilesForPhase returns the authorized file set used to
+// constrain the adapter sandbox for a given phase, along with an
+// ExtractionStatus describing how healthy that extraction was. The
+// `plan` phase authorizes no files (the planner is writing plan.md
+// itself, not editing repo code) and reports ExtractionOK. The `review`
+// phase trusts only plan.md, since review runs before review.md
+// exists. The `implement` and `verify` phases authorize the UNION of
+// plan-approved and review-approved files so that review-driven
+// additions — files the reviewer flagged as missing from the plan —
+// are still writable without a manual plan rewrite. Missing review.md
+// is tolerated (ExtractionResult.FileExists stays false for just that
+// entry and merges with plan.md's status).
+//
+// Errors from the extractor are NOT suppressed: a filesystem or
+// scanner failure on plan.md / review.md is surfaced to callers so
+// the sandbox configuration never silently fails.
+func extractAffectedFilesForPhase(wfDir, repo, phaseKey string) ([]string, ExtractionStatus, error) {
+	switch phaseKey {
+	case "plan":
+		return nil, ExtractionOK, nil
+	case "review":
+		res, err := judge.ExtractAffectedFilesDetailed(filepath.Join(wfDir, "plan.md"), repo)
+		if err != nil {
+			return nil, ExtractionMissing, err
+		}
+		return res.ValidPaths, classifyExtraction(res), nil
+	case "implement", "verify":
+		res, err := judge.ExtractAffectedFilesDetailedFromFiles(
+			[]string{
+				filepath.Join(wfDir, "plan.md"),
+				filepath.Join(wfDir, "review.md"),
+			},
+			repo,
+		)
+		if err != nil {
+			return nil, ExtractionMissing, err
+		}
+		return res.ValidPaths, classifyExtraction(res), nil
+	default:
+		return nil, ExtractionOK, nil
+	}
+}
+
+// classifyExtraction maps a content-aware ExtractionResult to the
+// adapter-facing ExtractionStatus. The ordering matters: "missing"
+// wins over "malformed" wins over "empty" wins over "ok".
+func classifyExtraction(res judge.ExtractionResult) ExtractionStatus {
+	if !res.FileExists || !res.SectionPresent {
+		return ExtractionMissing
+	}
+	if len(res.ValidPaths) > 0 {
+		return ExtractionOK
+	}
+	if len(res.InvalidEntries) > 0 {
+		return ExtractionMalformed
+	}
+	return ExtractionEmpty
 }
 
 // generatePhasePrompt calls the appropriate prompt generation function for the given phase.

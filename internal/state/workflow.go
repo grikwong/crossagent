@@ -371,7 +371,7 @@ func CreateWorkflow(name, repo, project, description string, addDirs []string) e
 		{"add_dirs", addDirsCSV},
 		{"created", timeNow()},
 		{"project", project},
-		{"max_retries", "10"},
+		{"max_retries", "25"},
 	}
 	for _, p := range pairs {
 		if err := SetConf(d, p[0], p[1]); err != nil {

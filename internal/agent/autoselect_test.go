@@ -1,6 +1,8 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestRecommendAgent_EmptyList(t *testing.T) {
 	if got := RecommendAgent("plan", nil); got != "" {
@@ -142,6 +144,66 @@ func TestRecommendAgent_DisplayNameMatches(t *testing.T) {
 	}
 	if got := RecommendAgent("plan", agents); got != "google-model" {
 		t.Errorf("plan via displayname: want google-model, got %q", got)
+	}
+}
+
+func TestAutoSelectAll(t *testing.T) {
+	// Isolate by pointing CROSSAGENT_HOME at a fresh dir so ListAgents
+	// returns only the registered builtin adapters (claude, codex, gemini)
+	// and no custom user-defined agents.
+	t.Setenv("CROSSAGENT_HOME", t.TempDir())
+
+	got, err := AutoSelectAll(t.TempDir())
+	if err != nil {
+		t.Fatalf("AutoSelectAll: %v", err)
+	}
+
+	want := map[string]string{
+		"plan":      "gemini",
+		"review":    "codex",
+		"implement": "claude",
+		"verify":    "gemini",
+	}
+	for phase, expected := range want {
+		if got[phase] != expected {
+			t.Errorf("phase %s: want %q, got %q", phase, expected, got[phase])
+		}
+	}
+
+	// Maker-checker invariant: implement family must differ from review
+	// and verify families.
+	implFam, _ := AgentFamily(got["implement"])
+	for _, checker := range []string{"review", "verify"} {
+		fam, _ := AgentFamily(got[checker])
+		if fam == implFam {
+			t.Errorf("checker %s shares family %q with implement", checker, implFam)
+		}
+	}
+}
+
+func TestPickDifferentFamily(t *testing.T) {
+	t.Setenv("CROSSAGENT_HOME", t.TempDir())
+
+	agents := []Agent{
+		{Name: "claude", DisplayName: "Claude Code", Adapter: "claude"},
+		{Name: "codex", DisplayName: "OpenAI Codex", Adapter: "codex"},
+		{Name: "gemini", DisplayName: "Gemini", Adapter: "gemini"},
+	}
+
+	if got := pickDifferentFamily("review", agents, "anthropic"); got != "codex" {
+		t.Errorf("review avoiding anthropic: want codex, got %q", got)
+	}
+	if got := pickDifferentFamily("verify", agents, "google"); got != "codex" {
+		t.Errorf("verify avoiding google: want codex (codex tier beats claude), got %q", got)
+	}
+	if got := pickDifferentFamily("implement", agents, "anthropic"); got != "codex" {
+		t.Errorf("implement avoiding anthropic: want codex, got %q", got)
+	}
+
+	// No candidate from a different family — must return "".
+	soloClaude := []Agent{{Name: "claude", DisplayName: "Claude Code", Adapter: "claude"}}
+	if got := pickDifferentFamily("review", soloClaude, "anthropic"); got != "" {
+		t.Errorf("only-anthropic avoiding anthropic: want \"\", got %q", got)
 	}
 }
 

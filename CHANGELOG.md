@@ -18,6 +18,7 @@
 
 ### Bug Fixes
 
+* fix macOS sandbox permission issues by resolving symlinks and authorizing home directory ([6f7a8b9](https://github.com/grikwong/crossagent/commit/6f7a8b9))
 * manual Mode 2026 synchronized output ([f3f7600](https://github.com/grikwong/crossagent/commit/f3f7600ccbc899cc693cf38d18a4add32a64e150))
 
 ## [1.4.0](https://github.com/grikwong/crossagent/compare/v1.3.0...v1.4.0) (2026-03-24)
