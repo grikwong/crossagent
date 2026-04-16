@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/grikwong/crossagent/compare/v1.7.0...v1.7.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* update Go to 1.25.9 to resolve GO-2026-4947 ([097fff8](https://github.com/grikwong/crossagent/commit/097fff83f022d819ee52a76f973f226f0764663b))
+
 ## [1.7.0](https://github.com/grikwong/crossagent/compare/v1.6.0...v1.7.0) (2026-04-16)
 
 
