@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.7.0](https://github.com/grikwong/crossagent/compare/v1.6.0...v1.7.0) (2026-04-16)
+
+
+### Features
+
+* add agents autoselect + Web UI model management ([a867c2c](https://github.com/grikwong/crossagent/commit/a867c2c5f6b1bb6e43c86e71269415dc4cd2aecf))
+* add searchable workflow picker ([421c106](https://github.com/grikwong/crossagent/commit/421c106eef67d1c3eb66aac7892d125691893506))
+* **agent:** add gemini adapter + sandbox-limited writes ([603de32](https://github.com/grikwong/crossagent/commit/603de3239ac7e748b211c6978a869214d9afaaec))
+* current-workflow retry artifact viewer ([1fb897f](https://github.com/grikwong/crossagent/commit/1fb897ff6d7741929a253b91039470b86bdbf3e1))
+* harden state and enhance sandbox recovery ([c6ab40c](https://github.com/grikwong/crossagent/commit/c6ab40c317a5ff1f8b08ee727cc3b96b83dadd8d))
+* surface attempt artifacts in root-level status JSON ([4488328](https://github.com/grikwong/crossagent/commit/4488328bad56cd107ba0a415c5b9a3e8ffe7be76))
+* **web:** 12-col grid layout + phase slots ([178e669](https://github.com/grikwong/crossagent/commit/178e669ecc665fbd644e565e38e4ef5c2afc7c86))
+* **web:** yellow-boxed styling for sidebar icon buttons ([71707f6](https://github.com/grikwong/crossagent/commit/71707f6b0281d44a9e5c96dca0351be489302273))
+
+
+### Bug Fixes
+
+* **state:** harden recovery, state writes, and paths ([644b752](https://github.com/grikwong/crossagent/commit/644b752a3f6075bbc2eb5bf9b05f81367906ccb9))
+
 ## [1.6.0](https://github.com/grikwong/crossagent/compare/v1.5.0...v1.6.0) (2026-04-06)
 
 
