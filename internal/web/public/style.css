@@ -21,6 +21,31 @@
   --radius: 6px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+
+  /* Pipeline-timeline (Variation B) tokens — used by the new layout.
+     Coexist with the legacy tokens above until commit 7 removes the old UI. */
+  --bg-0: #0e1013;
+  --bg-1: #14171c;
+  --bg-2: #191d23;
+  --bg-3: #1f242c;
+  --line: #242932;
+  --line-strong: #2e343f;
+  --fg-0: #e6e8ec;
+  --fg-1: #b3b8c2;
+  --fg-2: #7f8593;
+  --fg-3: #565c6a;
+  --accent-v2: oklch(0.72 0.09 260);
+  --accent-strong: oklch(0.66 0.13 260);
+  --phase-plan:      oklch(0.78 0.10 250);
+  --phase-review:    oklch(0.80 0.10  75);
+  --phase-implement: oklch(0.78 0.10 300);
+  --phase-verify:    oklch(0.80 0.10 145);
+  --state-ok:   oklch(0.80 0.10 145);
+  --state-warn: oklch(0.80 0.12  75);
+  --state-err:  oklch(0.72 0.14  22);
+  --state-run:  oklch(0.78 0.10 250);
+  --state-idle: var(--fg-3);
+  --font-ui:   'Inter', -apple-system, system-ui, sans-serif;
 }
 
 body {
