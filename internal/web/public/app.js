@@ -3,6 +3,7 @@
 import { PHASE_NAMES, esc, capitalize } from './js/util.js';
 import { api, wfApi as _wfApi } from './js/api.js';
 import { store, setState, subscribe } from './js/state.js';
+import { installModalClosers } from './js/modals.js';
 
 let state = null;
 let ws = null;
@@ -2538,30 +2539,13 @@ function bindEvents() {
     document.getElementById('adddir-form').reset();
   });
 
-  // Close modals with backdrop click (skip promise-backed modals — they manage their own dismiss)
-  const promiseModals = new Set(['suggest-modal', 'elicit-modal']);
-  document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
-    backdrop.addEventListener('click', () => {
-      const modal = backdrop.closest('.modal');
-      if (!promiseModals.has(modal.id)) {
-        modal.classList.add('hidden');
-      }
-    });
-  });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      // Close only the topmost visible modal (skip promise-backed modals — they handle Escape themselves)
-      const openModals = [...document.querySelectorAll('.modal:not(.hidden)')].filter(m => !promiseModals.has(m.id));
-      if (openModals.length > 0) {
-        openModals[openModals.length - 1].classList.add('hidden');
-      }
-      // Close tour if active
+  installModalClosers({
+    onEscape: () => {
       const tourOverlay = document.getElementById('tour-overlay');
       if (tourOverlay && !tourOverlay.classList.contains('hidden')) {
         endTour();
       }
-    }
+    },
   });
 
   // Tour controls
