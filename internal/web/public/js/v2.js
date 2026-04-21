@@ -1,0 +1,56 @@
+// Pipeline-timeline (Variation B) bootstrap. Gated by ?v2=1 until commit 7
+// deletes the old layout and makes this the default.
+
+import { store, subscribe } from './state.js';
+import * as TitleBar from './regions/titlebar.js';
+import * as WorkflowList from './regions/workflow-list.js';
+import * as PipelineHeader from './regions/pipeline-header.js';
+import * as PipelineBoard from './regions/pipeline-board.js';
+import * as ArtifactReader from './regions/artifact-reader.js';
+import * as ArtifactInfoRail from './regions/artifact-info-rail.js';
+
+export function isV2Enabled() {
+  try {
+    return new URLSearchParams(window.location.search).has('v2');
+  } catch {
+    return false;
+  }
+}
+
+export function initV2() {
+  if (!isV2Enabled()) return;
+
+  const legacy = document.querySelector('.app');
+  const v2 = document.querySelector('.app-v2');
+  if (!v2) return;
+
+  // Swap visibility.
+  if (legacy) legacy.classList.add('hidden');
+  v2.classList.remove('hidden');
+
+  // Mount regions.
+  TitleBar.mount(document.getElementById('v2-titlebar'));
+  WorkflowList.mount(document.getElementById('v2-workflow-list'));
+  PipelineHeader.mount(document.getElementById('v2-pipeline-header'));
+  PipelineBoard.mount(document.getElementById('v2-pipeline-board'));
+  ArtifactReader.mount(document.getElementById('v2-artifact-reader'));
+  ArtifactInfoRail.mount(document.getElementById('v2-artifact-info-rail'));
+
+  // Single subscription re-renders every region on store change.
+  subscribe(() => {
+    TitleBar.render();
+    WorkflowList.render();
+    PipelineHeader.render();
+    PipelineBoard.render();
+    ArtifactReader.render();
+    ArtifactInfoRail.render();
+  });
+
+  // Initial paint (the subscribe above fires only on subsequent setState).
+  TitleBar.render();
+  WorkflowList.render();
+  PipelineHeader.render();
+  PipelineBoard.render();
+  ArtifactReader.render();
+  ArtifactInfoRail.render();
+}

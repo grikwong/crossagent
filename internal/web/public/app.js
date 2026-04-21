@@ -4,6 +4,7 @@ import { PHASE_NAMES, esc, capitalize } from './js/util.js';
 import { api, wfApi as _wfApi } from './js/api.js';
 import { store, setState, subscribe } from './js/state.js';
 import { installModalClosers } from './js/modals.js';
+import { initV2, isV2Enabled } from './js/v2.js';
 
 let state = null;
 let ws = null;
@@ -2574,9 +2575,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   connectWS();
   initSidebarToggle();
   bindEvents();
+  // Expose a minimal refresh hook for v2 regions to trigger a full status+list
+  // reload after they mutate server state (Advance, workflow switch, etc.).
+  window.__crossagentRefreshStatus = async () => {
+    await fetchList();
+    await fetchStatus();
+  };
   await fetchProjects();
   await fetchList();
   await fetchStatus();
+  initV2();
 
   // Now that state is loaded, retry session reattach (the ws.onopen attempt
   // likely ran before fetchStatus populated state, so it returned early).

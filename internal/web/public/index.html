@@ -167,6 +167,21 @@
     </div>
   </div>
 
+  <!-- Pipeline-timeline layout (Variation B). Hidden by default; shown when
+       the page is loaded with ?v2=1. Commit 7 will make it the sole layout. -->
+  <div class="app-v2 hidden" data-density="comfortable">
+    <header class="titlebar" id="v2-titlebar"></header>
+    <aside class="workflow-list" id="v2-workflow-list"></aside>
+    <section class="pipeline">
+      <header class="pipeline-header" id="v2-pipeline-header"></header>
+      <div class="pipeline-board" id="v2-pipeline-board"></div>
+      <div class="artifact-pane">
+        <article class="artifact-reader" id="v2-artifact-reader"></article>
+        <aside class="artifact-info-rail" id="v2-artifact-info-rail"></aside>
+      </div>
+    </section>
+  </div>
+
   <!-- New Workflow Modal -->
   <div id="new-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
