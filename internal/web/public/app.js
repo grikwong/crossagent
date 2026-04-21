@@ -1,6 +1,8 @@
 // ── Crossagent UI ─────────────────────────────────────────────────────────────
 
-const PHASE_NAMES = ['', 'plan', 'review', 'implement', 'verify'];
+import { PHASE_NAMES, esc, capitalize } from './js/util.js';
+import { api, wfApi as _wfApi } from './js/api.js';
+import { store, setState, subscribe } from './js/state.js';
 
 let state = null;
 let ws = null;
@@ -31,19 +33,10 @@ let currentAdapter = null;     // Active agent adapter ('claude' | 'codex' | 'ge
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
-async function api(path, opts = {}) {
-  const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  return res.json();
-}
-
 // Workflow-scoped API call — routes through /api/workflow/{name}/... to avoid
 // dependence on the global active workflow file.
 function wfApi(path, opts = {}) {
-  if (!state || !state.name) return api(path, opts);
-  return api(`/workflow/${encodeURIComponent(state.name)}${path}`, opts);
+  return _wfApi(state && state.name ? state.name : null, path, opts);
 }
 
 async function fetchStatus() {
@@ -53,10 +46,12 @@ async function fetchStatus() {
       : await api('/status');
     if (data.error) {
       state = null;
+      setState({ status: null });
       renderNoWorkflow();
       return data;
     }
     state = data;
+    setState({ status: data, selectedWorkflowId: data.name });
     renderStatus();
     renderRoundScopedSidebar();
     renderDirectories();
@@ -65,6 +60,7 @@ async function fetchStatus() {
     return data;
   } catch {
     state = null;
+    setState({ status: null });
     renderNoWorkflow();
     return { error: 'Failed to fetch status' };
   }
@@ -73,9 +69,11 @@ async function fetchStatus() {
 async function fetchList() {
   try {
     const data = await api('/list');
+    setState({ workflows: data.workflows || [], projects: data.projects || [] });
     renderWorkflowPicker(data);
     return data;
   } catch {
+    setState({ workflows: [], projects: [] });
     renderWorkflowPicker({ workflows: [] });
     return { workflows: [] };
   }
@@ -2094,14 +2092,6 @@ async function markDone() {
 }
 
 // ── Utilities ───────────────────────────────────────────────────────────────
-
-function esc(str) {
-  const d = document.createElement('div');
-  d.textContent = str || '';
-  return d.innerHTML;
-}
-
-function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 
 function setFieldError(input, errorEl, message) {
   if (message) {
