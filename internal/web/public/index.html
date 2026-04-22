@@ -11,7 +11,11 @@
   <link rel="stylesheet" href="vendor/xterm.min.css">
 </head>
 <body>
-  <div class="app">
+  <!-- Legacy stacked-sidebar layout. Kept around as a hidden compat shell so
+       the v2 regions can still delegate to the existing topbar buttons and
+       modal handlers. A follow-up PR will inline those into v2 modules and
+       delete this block wholesale. -->
+  <div class="app hidden">
     <!-- Top Bar -->
     <header class="topbar">
       <div class="topbar-left">
@@ -167,9 +171,8 @@
     </div>
   </div>
 
-  <!-- Pipeline-timeline layout (Variation B). Hidden by default; shown when
-       the page is loaded with ?v2=1. Commit 7 will make it the sole layout. -->
-  <div class="app-v2 hidden" data-density="comfortable">
+  <!-- Pipeline-timeline layout (Variation B). This is the default layout. -->
+  <div class="app-v2" data-density="comfortable">
     <header class="titlebar" id="v2-titlebar"></header>
     <aside class="workflow-list" id="v2-workflow-list"></aside>
     <section class="pipeline">

@@ -4,7 +4,7 @@ import { PHASE_NAMES, esc, capitalize } from './js/util.js';
 import { api, wfApi as _wfApi } from './js/api.js';
 import { store, setState, subscribe } from './js/state.js';
 import { installModalClosers } from './js/modals.js';
-import { initV2, isV2Enabled } from './js/v2.js';
+import { initV2 } from './js/v2.js';
 
 let state = null;
 let ws = null;
@@ -2595,7 +2595,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     tryReattachSession();
   }
 
-  // Start tour on every app launch (user requirement: "tour the user on every launched of the app")
-  // Users can skip immediately via "Skip Tour" button; "?" button in topbar replays it anytime
-  startTour();
+  // The legacy tour targets the old stacked-sidebar DOM. Disabled while the
+  // compat shell is present but hidden. A v2-native tour is a follow-up.
 });

@@ -1,5 +1,7 @@
-// Pipeline-timeline (Variation B) bootstrap. Gated by ?v2=1 until commit 7
-// deletes the old layout and makes this the default.
+// Pipeline-timeline (Variation B) bootstrap. This is the active layout.
+// The legacy .app shell is kept hidden as a compat layer that exposes modal
+// buttons (Follow Up, Manage Projects, Manage Agents) that v2 regions
+// delegate to via element.click().
 
 import { store, setState, subscribe } from './state.js';
 import * as TitleBar from './regions/titlebar.js';
@@ -10,25 +12,13 @@ import * as ArtifactReader from './regions/artifact-reader.js';
 import * as ArtifactInfoRail from './regions/artifact-info-rail.js';
 import * as TerminalDrawer from './regions/terminal-drawer.js';
 
-export function isV2Enabled() {
-  try {
-    return new URLSearchParams(window.location.search).has('v2');
-  } catch {
-    return false;
-  }
-}
-
 export function initV2() {
-  if (!isV2Enabled()) return;
-
   const legacy = document.querySelector('.app');
   const v2 = document.querySelector('.app-v2');
   if (!v2) return;
 
-  // Swap visibility. Marking the body allows the drawer's fixed positioning
-  // and other global rules to scope themselves to v2.
+  // Ensure legacy stays hidden; v2 is the default.
   if (legacy) legacy.classList.add('hidden');
-  v2.classList.remove('hidden');
   document.body.dataset.v2 = 'true';
   v2.dataset.density = store.density;
 

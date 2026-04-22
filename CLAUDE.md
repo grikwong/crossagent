@@ -122,7 +122,7 @@ The `crossagent projects` CLI subcommand manages projects:
 - API handlers shell out to the crossagent binary for complex operations (guarantees JSON compatibility)
 - All user input is validated server-side before processing
 - PTY sessions use `creack/pty` + `gorilla/websocket`; launch params come from `crossagent phase-cmd --json`
-- Frontend uses vanilla JS, no build step — xterm.js, addon-fit, and marked are vendored in `public/vendor/`
+- Frontend uses vanilla JS with native ES modules (`<script type="module">`), no build step — xterm.js, addon-fit, and marked are vendored in `public/vendor/` as classic scripts that load before the module graph. Frontend modules live under `public/js/` (`state.js`, `api.js`, `util.js`, `derive.js`, `modals.js`, `v2.js`) with per-region modules under `public/js/regions/` (`titlebar.js`, `workflow-list.js`, `pipeline-header.js`, `pipeline-board.js`, `artifact-reader.js`, `artifact-info-rail.js`, `terminal-drawer.js`). Each region exports `mount(el)` and `render()`; all UI truth flows through the `store` in `state.js`. The default layout is the pipeline-timeline (Variation B) defined by `.app-v2` in `index.html` and styled by `pipeline.css` + `terminal-drawer.css`. The legacy stacked-sidebar `.app` shell is kept hidden as a compat layer that exposes the existing modal buttons — v2 regions delegate to it via `element.click()`.
 - WebSocket protocol: `spawn`, `input`, `resize`, `kill` from client; `output`, `spawned`, `exit`, `error` from server
 - Chat history is captured per-session with a 50MB buffer cap, flushed atomically on exit/kill/disconnect
 
