@@ -8,6 +8,7 @@ import * as PipelineHeader from './regions/pipeline-header.js';
 import * as PipelineBoard from './regions/pipeline-board.js';
 import * as ArtifactReader from './regions/artifact-reader.js';
 import * as ArtifactInfoRail from './regions/artifact-info-rail.js';
+import * as TerminalDrawer from './regions/terminal-drawer.js';
 
 export function isV2Enabled() {
   try {
@@ -24,9 +25,11 @@ export function initV2() {
   const v2 = document.querySelector('.app-v2');
   if (!v2) return;
 
-  // Swap visibility.
+  // Swap visibility. Marking the body allows the drawer's fixed positioning
+  // and other global rules to scope themselves to v2.
   if (legacy) legacy.classList.add('hidden');
   v2.classList.remove('hidden');
+  document.body.dataset.v2 = 'true';
 
   // Mount regions.
   TitleBar.mount(document.getElementById('v2-titlebar'));
@@ -35,6 +38,7 @@ export function initV2() {
   PipelineBoard.mount(document.getElementById('v2-pipeline-board'));
   ArtifactReader.mount(document.getElementById('v2-artifact-reader'));
   ArtifactInfoRail.mount(document.getElementById('v2-artifact-info-rail'));
+  TerminalDrawer.mount(document.getElementById('v2-terminal-drawer'));
 
   // Single subscription re-renders every region on store change.
   subscribe(() => {
