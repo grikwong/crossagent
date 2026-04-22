@@ -448,3 +448,89 @@
   word-break: break-all;
   line-height: 1.4;
 }
+
+/* ── Reader action buttons ──────────────────────────────────────────────── */
+
+.app-v2 .ar-action-btn {
+  background: transparent;
+  color: var(--fg-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.app-v2 .ar-action-btn:hover { color: var(--fg-0); background: var(--bg-2); }
+.app-v2 .ar-action-btn--active { color: var(--fg-0); background: var(--bg-3); border-color: var(--line-strong); }
+.app-v2 .ar-raw {
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  padding: 16px 18px;
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+/* ── PhaseCell retry-attempt chevron ────────────────────────────────────── */
+
+.app-v2 .ph-attempts-btn {
+  background: transparent;
+  border: none;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  cursor: pointer;
+  margin-left: auto;
+  padding: 0 2px;
+}
+.app-v2 .ph-attempts-btn:hover { color: var(--fg-0); }
+.app-v2 .phase-cell[data-attempts-open="true"] .ph-attempts-list { display: flex; }
+.app-v2 .ph-attempts-list {
+  display: none;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+.app-v2 .ph-attempt-chip {
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.app-v2 .ph-attempt-chip:hover { background: var(--bg-3); color: var(--fg-0); }
+.app-v2 .ph-attempt-chip--selected {
+  background: var(--state-warn);
+  color: var(--bg-0);
+  border-color: var(--state-warn);
+}
+
+/* ── Breakpoints ────────────────────────────────────────────────────────── */
+
+@media (max-width: 980px) {
+  .app-v2 .artifact-info-rail { display: none; }
+  .app-v2 .artifact-reader { width: 100%; }
+}
+
+@media (max-width: 800px) {
+  .app-v2 {
+    grid-template-columns: 1fr;
+    grid-template-rows: 40px auto 1fr;
+    grid-template-areas:
+      "tb"
+      "wfl"
+      "pl";
+  }
+  .app-v2 .workflow-list {
+    max-height: 180px;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+}

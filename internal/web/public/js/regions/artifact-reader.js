@@ -11,6 +11,8 @@ let root = null;
 let lastKey = '';
 let lastLoaded = '';
 let inFlight = 0;
+let rawMode = false;
+let lastContent = '';
 
 function buildPath() {
   const s = store.status;
@@ -40,12 +42,18 @@ function renderHeader() {
   const s = store.status;
   const phase = store.selectedPhase;
   const round = store.selectedRound != null ? store.selectedRound : ((s && s.followup_round || 0) + 1);
+  const attempt = store.selectedAttempt;
   if (!s || !phase) return '';
+  const fileLabel = attempt != null
+    ? `R${round} / ${esc(phase)}.attempt-${esc(String(attempt))}.md`
+    : `R${round} / ${esc(phase)}.md`;
   return `
     <div class="ar-head">
       <span class="ar-dot ar-dot--${phase}"></span>
-      <span class="ar-file">R${round} / ${esc(phase)}.md</span>
-      <div class="ar-actions"></div>
+      <span class="ar-file">${fileLabel}</span>
+      <div class="ar-actions">
+        <button class="ar-action-btn ${rawMode ? 'ar-action-btn--active' : ''}" id="ar-toggle-raw">${rawMode ? 'Rendered' : 'Raw'}</button>
+      </div>
     </div>
   `;
 }
@@ -53,6 +61,37 @@ function renderHeader() {
 export function mount(el) {
   root = el;
   render();
+}
+
+function paintBody(content) {
+  const body = root && root.querySelector('.ar-body');
+  if (!body) return;
+  if (!content) {
+    body.innerHTML = `<div class="ar-empty">Artifact not yet written.</div>`;
+    return;
+  }
+  if (rawMode) {
+    body.innerHTML = `<pre class="ar-raw">${esc(content)}</pre>`;
+    return;
+  }
+  const html = (typeof window.marked !== 'undefined' && window.marked.parse)
+    ? window.marked.parse(content)
+    : `<pre>${esc(content)}</pre>`;
+  body.innerHTML = `<div class="ar-md">${html}</div>`;
+}
+
+function bindHeader() {
+  if (!root) return;
+  const btn = root.querySelector('#ar-toggle-raw');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    rawMode = !rawMode;
+    // Re-paint header + body without refetching.
+    const headSlot = root.querySelector('.ar-head');
+    if (headSlot) headSlot.outerHTML = renderHeader();
+    paintBody(lastContent);
+    bindHeader();
+  });
 }
 
 export async function render() {
@@ -66,6 +105,7 @@ export async function render() {
     root.innerHTML = `
       <div class="ar-empty">Click a phase cell above to view its artifact.</div>
     `;
+    lastContent = '';
     return;
   }
 
@@ -73,6 +113,7 @@ export async function render() {
     ${renderHeader()}
     <div class="ar-body"><div class="ar-loading">Loading…</div></div>
   `;
+  bindHeader();
 
   const data = await fetchContent();
   if (!data) return; // stale
@@ -81,16 +122,10 @@ export async function render() {
 
   if (data.error) {
     body.innerHTML = `<div class="ar-error">${esc(data.error)}</div>`;
+    lastContent = '';
     return;
   }
-  const content = data.content || '';
-  if (!content) {
-    body.innerHTML = `<div class="ar-empty">Artifact not yet written.</div>`;
-    return;
-  }
-  const html = (typeof window.marked !== 'undefined' && window.marked.parse)
-    ? window.marked.parse(content)
-    : `<pre>${esc(content)}</pre>`;
-  body.innerHTML = `<div class="ar-md">${html}</div>`;
+  lastContent = data.content || '';
+  paintBody(lastContent);
   lastLoaded = key;
 }

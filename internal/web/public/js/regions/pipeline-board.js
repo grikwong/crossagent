@@ -84,6 +84,15 @@ export function render() {
         selPhase === p.phase &&
         ((r.current && selRound === null) || (!r.current && selRound === r.number));
       const pending = p.state === 'pending' || p.state === 'missing';
+      const attemptsHtml = p.retries > 0
+        ? Array.from({ length: p.retries }).map((_, i) => {
+            const attempt = i + 1;
+            const isAttemptSel = isSel && store.selectedAttempt === attempt;
+            return `<button class="ph-attempt-chip ${isAttemptSel ? 'ph-attempt-chip--selected' : ''}"
+                    data-round="${r.number}" data-phase="${p.phase}" data-attempt="${attempt}"
+                    data-current="${r.current ? '1' : '0'}">attempt-${attempt}</button>`;
+          }).join('')
+        : '';
       return `
         <div class="phase-cell phase-cell--${p.phase} phase-cell--${p.state} ${isSel ? 'phase-cell--selected' : ''} ${pending ? 'phase-cell--dim' : ''}"
              data-round="${r.number}" data-phase="${p.phase}" data-current="${r.current ? '1' : '0'}">
@@ -94,8 +103,9 @@ export function render() {
           <div class="ph-bot">
             <span class="ph-state">${esc(p.state)}</span>
             <span class="ph-dots">${renderDots(p.retries)}</span>
-            ${p.retries > 0 ? `<span class="ph-attempts">${p.retries} attempt${p.retries > 1 ? 's' : ''}</span>` : ''}
+            ${p.retries > 0 ? `<span class="ph-attempts">${p.retries} attempt${p.retries > 1 ? 's' : ''}</span><button class="ph-attempts-btn" title="Show attempts">▾</button>` : ''}
           </div>
+          ${attemptsHtml ? `<div class="ph-attempts-list">${attemptsHtml}</div>` : ''}
         </div>
       `;
     }).join('');
@@ -110,7 +120,28 @@ export function render() {
   root.innerHTML = `${header}${rowsHtml}`;
 
   root.querySelectorAll('.phase-cell').forEach(el => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (e) => {
+      // Attempt chip clicks select the attempt directly.
+      if (e.target.classList.contains('ph-attempt-chip')) {
+        e.stopPropagation();
+        const round = parseInt(e.target.dataset.round, 10);
+        const phase = e.target.dataset.phase;
+        const attempt = parseInt(e.target.dataset.attempt, 10);
+        const current = e.target.dataset.current === '1';
+        setState({
+          selectedRound: current ? null : round,
+          selectedPhase: phase,
+          selectedAttempt: attempt,
+        });
+        return;
+      }
+      // Attempts toggle chevron just opens/closes the attempt list locally.
+      if (e.target.classList.contains('ph-attempts-btn')) {
+        e.stopPropagation();
+        const open = el.dataset.attemptsOpen === 'true';
+        el.dataset.attemptsOpen = open ? 'false' : 'true';
+        return;
+      }
       const round = parseInt(el.dataset.round, 10);
       const phase = el.dataset.phase;
       const current = el.dataset.current === '1';
