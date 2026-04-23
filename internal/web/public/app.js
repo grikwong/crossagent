@@ -32,6 +32,7 @@ let selectedProjectFilter = ''; // Current project filter in topbar
 let viewingChatHistory = false; // Whether terminal is showing historical chat replay
 let selectedRound = null;      // Selected archived round number (null = current)
 let currentAdapter = null;     // Active agent adapter ('claude' | 'codex' | 'gemini') for PTY behavior
+let _fetchStatusSeq = 0;       // Monotonically-increasing counter; guards against stale fetchStatus responses
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
@@ -58,10 +59,13 @@ function syncSessionToStore() {
 }
 
 async function fetchStatus() {
+  const seq = ++_fetchStatusSeq;
   try {
-    const data = state && state.name
-      ? await wfApi('/status')
+    const targetName = store.selectedWorkflowId || (state && state.name);
+    const data = targetName
+      ? await _wfApi(targetName, '/status')
       : await api('/status');
+    if (seq !== _fetchStatusSeq) return data; // discard stale response; a newer call won
     if (data.error) {
       state = null;
       setState({ status: null });
@@ -77,6 +81,7 @@ async function fetchStatus() {
     updateRunButton();
     return data;
   } catch {
+    if (seq !== _fetchStatusSeq) return { error: 'stale' };
     state = null;
     setState({ status: null });
     renderNoWorkflow();
@@ -2605,6 +2610,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await fetchList();
     await fetchStatus();
   };
+  window.__crossagentSwitchWorkflow = (name) => switchWorkflow(name);
   // Expose the terminal-fit scheduler so the v2 drawer can refit xterm after
   // open/close without duplicating the debounce + ResizeObserver logic here.
   window.__crossagentScheduleFit = (opts) => scheduleTerminalFit(opts);

@@ -6,7 +6,6 @@
 
 import { store, setState } from '../state.js';
 import { esc, hashKey } from '../util.js';
-import { api } from '../api.js';
 
 let root = null;
 let lastKey = '';
@@ -90,14 +89,11 @@ export function render() {
     el.addEventListener('click', async () => {
       const name = el.dataset.name;
       if (!name || name === store.selectedWorkflowId) return;
+      // Immediately highlight the clicked row; switchWorkflow will complete the
+      // full transition (session cleanup, status refetch, PTY reattach).
       setState({ selectedWorkflowId: name, selectedRound: null, selectedPhase: null });
-      // Set server-side active workflow so polling picks up the right status.
-      try {
-        await api(`/use/${encodeURIComponent(name)}`, { method: 'POST' });
-      } catch { /* best effort */ }
-      // Trigger a status refetch through the legacy fetchStatus if exposed.
-      if (typeof window.__crossagentRefreshStatus === 'function') {
-        window.__crossagentRefreshStatus();
+      if (typeof window.__crossagentSwitchWorkflow === 'function') {
+        await window.__crossagentSwitchWorkflow(name);
       }
     });
   });
