@@ -9,7 +9,6 @@ import { esc, hashKey } from '../util.js';
 
 let root = null;
 let lastKey = '';
-let lastLoaded = '';
 let inFlight = 0;
 let rawMode = false;
 let lastContent = '';
@@ -127,5 +126,4 @@ export async function render() {
   }
   lastContent = data.content || '';
   paintBody(lastContent);
-  lastLoaded = key;
 }

@@ -223,7 +223,9 @@
   color: var(--bg-0);
   font-weight: 600;
 }
-.app-v2 .pl-btn--primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.app-v2 .pl-btn--primary:hover:not([disabled]) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.app-v2 .pl-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.app-v2 .pl-btn[disabled]:hover { background: var(--bg-2); color: var(--fg-1); }
 
 .app-v2 .pl-empty { padding: 24px; color: var(--fg-2); }
 
@@ -423,6 +425,26 @@
   margin-bottom: 8px;
   font-weight: 600;
 }
+.app-v2 .ir-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.app-v2 .ir-label-row .ir-label { margin-bottom: 0; }
+.app-v2 .ir-add-btn {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--fg-1);
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.app-v2 .ir-add-btn:hover { background: var(--bg-3); color: var(--fg-0); }
 .app-v2 .ir-row {
   display: flex; gap: 8px; padding: 4px 0;
   border-bottom: 1px solid var(--line);

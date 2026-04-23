@@ -45,21 +45,18 @@ export function initV2() {
   ArtifactInfoRail.mount(document.getElementById('v2-artifact-info-rail'));
   TerminalDrawer.mount(document.getElementById('v2-terminal-drawer'));
 
+  const regions = [TitleBar, WorkflowList, PipelineHeader, PipelineBoard,
+                   ArtifactReader, ArtifactInfoRail, TerminalDrawer];
+
   // Single subscription re-renders every region on store change.
   subscribe(() => {
-    TitleBar.render();
-    WorkflowList.render();
-    PipelineHeader.render();
-    PipelineBoard.render();
-    ArtifactReader.render();
-    ArtifactInfoRail.render();
+    for (const r of regions) {
+      if (typeof r.render === 'function') r.render();
+    }
   });
 
   // Initial paint (the subscribe above fires only on subsequent setState).
-  TitleBar.render();
-  WorkflowList.render();
-  PipelineHeader.render();
-  PipelineBoard.render();
-  ArtifactReader.render();
-  ArtifactInfoRail.render();
+  for (const r of regions) {
+    if (typeof r.render === 'function') r.render();
+  }
 }

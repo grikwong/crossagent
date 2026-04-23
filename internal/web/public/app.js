@@ -41,6 +41,22 @@ function wfApi(path, opts = {}) {
   return _wfApi(state && state.name ? state.name : null, path, opts);
 }
 
+// Mirror browser-only session state into the store so v2 regions (titlebar
+// status dot, pipeline-board "running" glyph, terminal-drawer status line,
+// workflow-list row dot) can react. Call this any time sessionActive,
+// currentSessionID, currentAdapter, isInputOwner, or pendingPhaseName changes.
+function syncSessionToStore() {
+  setState({
+    session: {
+      active: !!sessionActive,
+      id: currentSessionID,
+      phase: sessionActive ? pendingPhaseName : null,
+      isOwner: !!isInputOwner,
+      adapter: currentAdapter,
+    },
+  });
+}
+
 async function fetchStatus() {
   try {
     const data = state && state.name
@@ -1328,6 +1344,7 @@ function connectWS() {
         isInputOwner = true;
         setTerminalStatus('running', `Running — PID ${msg.pid}${msg.adapter ? ' (' + msg.adapter + ')' : ''}`);
         updateRunButton();
+        syncSessionToStore();
         applyAdapterTerminalSettings(msg.adapter);
         scheduleTerminalFit({ notifyPty: true, force: true });
         if (msg.extraction_status && msg.extraction_status !== 'ok' && msg.extraction_status !== '') {
@@ -1343,6 +1360,7 @@ function connectWS() {
         currentAdapter = null;
         isInputOwner = true;
         stopOutputPolling();
+        syncSessionToStore();
         handleSessionExit(msg.code);
         break;
       case 'replay':
@@ -1366,12 +1384,15 @@ function connectWS() {
           setTerminalStatus('exited', 'Session ended');
           updateRunButton();
         }
+        syncSessionToStore();
         break;
       case 'input-claimed':
         isInputOwner = true;
+        syncSessionToStore();
         break;
       case 'input-released':
         isInputOwner = false;
+        syncSessionToStore();
         break;
       case 'error':
         flushTerminalOutput();
@@ -1380,6 +1401,7 @@ function connectWS() {
         currentSessionID = null;
         stopOutputPolling();
         updateRunButton();
+        syncSessionToStore();
         break;
     }
   };
@@ -1393,6 +1415,7 @@ function connectWS() {
     // Keep currentSessionID so we can reattach on reconnect
     sessionActive = false;
     stopOutputPolling();
+    syncSessionToStore();
     setTimeout(connectWS, 3000);
   };
 }
@@ -2049,6 +2072,7 @@ async function switchWorkflow(name) {
     pendingOutputFile = null;
     pendingPhaseName = null;
     stopOutputPolling();
+    syncSessionToStore();
 
     document.querySelectorAll('.artifact-item').forEach(el => el.classList.remove('active'));
     document.getElementById('artifact-viewer').innerHTML = '<p class="muted centered">Select an artifact from the sidebar to view it</p>';

@@ -682,6 +682,12 @@ input.field-invalid, textarea.field-invalid {
 .centered { text-align: center; padding: 40px 20px; }
 .hidden { display: none !important; }
 
+/* When v2 is the active layout, hide legacy entry-point buttons that v2
+   delegates to via element.click() — they must stay in the DOM but must
+   not consume viewport space. Also hide the tour button (legacy tour
+   targets the old sidebar selectors). */
+body[data-v2="true"] #tour-btn { display: none; }
+
 /* ── Sidebar Toggle (hidden on desktop) ────────────────────────────────── */
 
 .sidebar-toggle { display: none; }

@@ -4,7 +4,7 @@
 // We DOM-move that element into the drawer on first mount so the WebSocket,
 // PTY session, and scrollback all persist untouched.
 
-import { store, setState, subscribe } from '../state.js';
+import { store, setState } from '../state.js';
 
 let root = null;
 let mounted = false;
@@ -30,11 +30,12 @@ export function mount(el) {
     setState({ terminalDrawerOpen: false });
   });
 
-  subscribe((s, patch) => {
-    if ('terminalDrawerOpen' in patch) applyOpen();
-    if ('session' in patch) updateStatus();
-  });
+  applyOpen();
+  updateStatus();
+}
 
+// Called by v2.js on every store change. Handles both open/close and status.
+export function render() {
   applyOpen();
   updateStatus();
 }

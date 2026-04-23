@@ -80,7 +80,6 @@ export function render() {
   const rowsHtml = rounds.map(r => {
     const cells = r.phases.map(p => {
       const isSel =
-        (selRound === r.number || (selRound === null && r.current && selRound === null)) &&
         selPhase === p.phase &&
         ((r.current && selRound === null) || (!r.current && selRound === r.number));
       const pending = p.state === 'pending' || p.state === 'missing';

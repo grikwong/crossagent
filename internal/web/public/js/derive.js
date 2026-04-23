@@ -14,8 +14,15 @@ import { PHASE_IDS } from './util.js';
 
 const PHASES = ['plan', 'review', 'implement', 'verify'];
 
+// Handles both wire formats:
+//   - status.phase_label: "plan" | "review" | "implement" | "verify" | "done"
+//   - status.phase:       "1" | "2" | "3" | "4" | "done"
+// Prefer phase_label when provided so this works whether the caller passes
+// the full status object's .phase or .phase_label.
 function phaseIdFromName(name) {
   if (!name || name === 'done') return 5;
+  const asNum = parseInt(name, 10);
+  if (!isNaN(asNum) && asNum >= 1 && asNum <= 4) return asNum;
   return PHASE_IDS[name] || 1;
 }
 
@@ -43,9 +50,10 @@ export function deriveRoundSummaries(status, session) {
     });
   }
 
-  // Current round
+  // Current round. Prefer phase_label (always "plan"/"review"/…) over
+  // phase (numeric "1"/"2"/… on the wire).
   const currentNum = (status.followup_round || 0) + 1;
-  const currentPhaseId = phaseIdFromName(status.phase);
+  const currentPhaseId = phaseIdFromName(status.phase_label || status.phase);
 
   out.push({
     number: currentNum,

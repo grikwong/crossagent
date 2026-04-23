@@ -1,23 +1,17 @@
-// TitleBar region — app name, status dot, project filter, terminal toggle.
-//
-// Scope for commit 4:
-//   - Logo + status dot (WS connection) + version
-//   - Project filter dropdown (reads store.projects, writes
-//     store.selectedProjectFilter). A trailing "Manage projects…" item opens
-//     the existing manage-projects modal.
-//   - Terminal toggle button (wired in commit 5)
-//
-// Deferred to commit 6:
-//   - Model picker (per-workflow agent chooser)
-//   - Ctrl+, / Cmd+, density toggle
-//   - "New workflow" + "Tour" buttons (users can keep using the legacy topbar
-//     buttons until commit 7 removes them)
+// TitleBar — logo, status dot, project filter, entry-point buttons,
+// terminal toggle. Action buttons (New, Models, Manage projects…) delegate
+// to the existing legacy handlers via element.click().
 
 import { store, setState } from '../state.js';
 import { esc, hashKey } from '../util.js';
 
 let root = null;
 let lastKey = '';
+
+function clickLegacy(id) {
+  const btn = document.getElementById(id);
+  if (btn) btn.click();
+}
 
 export function mount(el) {
   root = el;
@@ -55,6 +49,8 @@ export function render() {
           <option value="__manage__">Manage projects…</option>
         </select>
       </label>
+      <button class="tb-btn" id="tb-new" title="Create a new workflow">+ New</button>
+      <button class="tb-btn" id="tb-models" title="Configure agent adapters for each phase">Models</button>
     </div>
     <div class="tb-right">
       <span id="tb-status-dot" class="tb-status-dot ${store.session.active ? 'is-active' : ''}"
@@ -72,14 +68,15 @@ export function render() {
   root.querySelector('#tb-project-filter').addEventListener('change', (e) => {
     const v = e.target.value;
     if (v === '__manage__') {
-      // Open the existing manage-projects modal and revert the dropdown.
       e.target.value = store.selectedProjectFilter;
-      const manageBtn = document.getElementById('manage-projects-btn');
-      if (manageBtn) manageBtn.click();
+      clickLegacy('manage-projects-btn');
       return;
     }
     setState({ selectedProjectFilter: v });
   });
+
+  root.querySelector('#tb-new').addEventListener('click', () => clickLegacy('new-btn'));
+  root.querySelector('#tb-models').addEventListener('click', () => clickLegacy('manage-agents-btn'));
 
   root.querySelector('#tb-terminal-toggle').addEventListener('click', () => {
     setState({ terminalDrawerOpen: !store.terminalDrawerOpen });

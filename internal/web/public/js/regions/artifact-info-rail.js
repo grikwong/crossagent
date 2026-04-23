@@ -62,8 +62,19 @@ export function render() {
   root.innerHTML = `
     ${thisRun}
     <section class="ir-section">
-      <h4 class="ir-label">Directories</h4>
+      <div class="ir-label-row">
+        <h4 class="ir-label">Directories</h4>
+        <button class="ir-add-btn" id="ir-add-dir" title="Add additional directory">+</button>
+      </div>
       ${dirsHtml}
     </section>
   `;
+
+  const addBtn = root.querySelector('#ir-add-dir');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      const legacy = document.getElementById('add-dir-btn');
+      if (legacy) legacy.click();
+    });
+  }
 }

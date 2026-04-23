@@ -25,6 +25,17 @@ body[data-v2="true"] .terminal-drawer[data-open="false"] {
   transition: transform 0.18s ease-out, visibility 0s linear 0.18s;
 }
 
+/* When the drawer is open, reserve space at the bottom of the pipeline
+   column so the artifact reader isn't obscured. */
+body[data-v2="true"] .app-v2:has(.terminal-drawer[data-open="true"]) .pipeline {
+  padding-bottom: 200px;
+}
+/* Narrow viewports: drawer shrinks to keep the pipeline usable. */
+@media (max-width: 800px) {
+  body[data-v2="true"] .terminal-drawer { height: 160px; }
+  body[data-v2="true"] .app-v2:has(.terminal-drawer[data-open="true"]) .pipeline { padding-bottom: 160px; }
+}
+
 body[data-v2="true"] .terminal-drawer .td-header {
   display: flex;
   align-items: center;
