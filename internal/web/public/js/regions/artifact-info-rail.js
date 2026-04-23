@@ -27,6 +27,7 @@ export function render() {
     s && s.description, s && s.phase,
     s && s.artifacts && s.artifacts.plan && s.artifacts.plan.exists,
     store.selectedRound,
+    store.session && store.session.active,
   );
   if (key === lastKey) return;
   lastKey = key;
@@ -41,9 +42,10 @@ export function render() {
     : ((s.followup_round || 0) + 1);
 
   // Description is editable only when viewing the current round (not archived),
-  // phase is "1", and no plan artifact exists yet (workflow hasn't been run).
+  // phase is "1", no plan artifact exists yet, and no plan session is running.
   const planExists = s.artifacts && s.artifacts.plan && s.artifacts.plan.exists;
-  const editable = store.selectedRound == null && s.phase === '1' && !planExists;
+  const sessionRunning = store.session && store.session.active;
+  const editable = store.selectedRound == null && s.phase === '1' && !planExists && !sessionRunning;
   const descHtml = `
     <section class="ir-section">
       <h4 class="ir-label">Description</h4>

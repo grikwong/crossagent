@@ -142,6 +142,11 @@ func TestHandleWorkflowSetDescription(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("CROSSAGENT_HOME", tmpHome)
 
+	// Prevent runCLI from recursively exec'ing the test binary and hanging.
+	orig := crossagentBin
+	crossagentBin = "/usr/bin/false"
+	t.Cleanup(func() { crossagentBin = orig })
+
 	// Create a workflow at phase 1 with no plan.md (pre-run state).
 	wfDir := filepath.Join(tmpHome, "workflows", "test-wf")
 	if err := os.MkdirAll(wfDir, 0o755); err != nil {
@@ -154,8 +159,9 @@ func TestHandleWorkflowSetDescription(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	sm := NewSessionManager()
 	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /api/workflow/{name}/description", handleWorkflowSetDescription)
+	mux.HandleFunc("PUT /api/workflow/{name}/description", handleWorkflowSetDescription(sm))
 
 	t.Run("invalid workflow name", func(t *testing.T) {
 		// Names starting with '-' fail validateName.
