@@ -1192,7 +1192,7 @@ function flushTerminalOutput() {
 
 // Determine terminal font size based on viewport width
 function getTerminalFontSize() {
-  return window.innerWidth <= 480 ? 11 : 13;
+  return window.innerWidth <= 480 ? 11 : 12;
 }
 
 // Apply adapter-specific terminal settings.
@@ -1221,6 +1221,9 @@ function fitTerminal(options = {}) {
   }
 
   fitAddon.fit();
+  if (term.rows > 0) {
+    term.refresh(0, term.rows - 1);
+  }
 
   if (!notifyPty || !ws || ws.readyState !== WebSocket.OPEN || !sessionActive) {
     return;
@@ -2614,6 +2617,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Expose the terminal-fit scheduler so the v2 drawer can refit xterm after
   // open/close without duplicating the debounce + ResizeObserver logic here.
   window.__crossagentScheduleFit = (opts) => scheduleTerminalFit(opts);
+  window.__crossagentRefreshTerminalView = () => {
+    if (term && term.rows > 0) {
+      term.refresh(0, term.rows - 1);
+    }
+  };
   await fetchProjects();
   await fetchList();
   await fetchStatus();
