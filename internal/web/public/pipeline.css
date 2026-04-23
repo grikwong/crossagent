@@ -47,6 +47,11 @@
 }
 .app-v2 .tb-version { color: var(--fg-3); font-size: 11px; }
 
+.app-v2 .tb-filter {
+  display: flex;
+  align-items: center;
+}
+
 .app-v2 .tb-filter select {
   background: var(--bg-2);
   color: var(--fg-1);
@@ -54,6 +59,10 @@
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 12px;
+  height: 28px;
+  line-height: 1;
+  cursor: pointer;
+  appearance: auto;
 }
 
 .app-v2 .tb-status-dot {
@@ -79,6 +88,8 @@
   padding: 4px 10px;
   font-size: 12px;
   cursor: pointer;
+  height: 28px;
+  line-height: 1;
 }
 .app-v2 .tb-btn:hover { background: var(--bg-3); color: var(--fg-0); }
 
@@ -469,6 +480,43 @@
   color: var(--fg-1);
   word-break: break-all;
   line-height: 1.4;
+}
+
+/* Info rail — description */
+.app-v2 .ir-desc-text {
+  font-size: 12px;
+  color: var(--fg-1);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin: 0;
+}
+.app-v2 .ir-desc-edit {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-input, var(--bg-2));
+  color: var(--fg-0);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  resize: vertical;
+}
+.app-v2 .ir-save-btn {
+  margin-top: 6px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.app-v2 .ir-save-btn:disabled { opacity: 0.5; cursor: default; }
+.app-v2 .ir-save-status {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--fg-3);
 }
 
 /* ── Reader action buttons ──────────────────────────────────────────────── */

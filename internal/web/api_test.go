@@ -138,6 +138,121 @@ func TestHandleUpdateDescription(t *testing.T) {
 	})
 }
 
+func TestHandleWorkflowSetDescription(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("CROSSAGENT_HOME", tmpHome)
+
+	// Create a workflow at phase 1 with no plan.md (pre-run state).
+	wfDir := filepath.Join(tmpHome, "workflows", "test-wf")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "phase"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "description"), []byte("Old description\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/workflow/{name}/description", handleWorkflowSetDescription)
+
+	t.Run("invalid workflow name", func(t *testing.T) {
+		// Names starting with '-' fail validateName.
+		req := httptest.NewRequest("PUT", "/api/workflow/-bad-name/description", strings.NewReader(`{"description":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != 400 {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("missing description field", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/api/workflow/test-wf/description", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != 400 {
+			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("nonexistent workflow", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/api/workflow/no-such-wf/description", strings.NewReader(`{"description":"new"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != 404 {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+
+	t.Run("rejects workflow at phase 2", func(t *testing.T) {
+		wfDir2 := filepath.Join(tmpHome, "workflows", "wf-phase2")
+		if err := os.MkdirAll(wfDir2, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wfDir2, "phase"), []byte("2"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wfDir2, "description"), []byte("desc\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		req := httptest.NewRequest("PUT", "/api/workflow/wf-phase2/description", strings.NewReader(`{"description":"new"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != 409 {
+			t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("rejects workflow with existing plan.md", func(t *testing.T) {
+		wfDir3 := filepath.Join(tmpHome, "workflows", "wf-started")
+		if err := os.MkdirAll(wfDir3, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wfDir3, "phase"), []byte("1"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wfDir3, "description"), []byte("desc\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wfDir3, "plan.md"), []byte("# plan\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		req := httptest.NewRequest("PUT", "/api/workflow/wf-started/description", strings.NewReader(`{"description":"new"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != 409 {
+			t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("writes description on success", func(t *testing.T) {
+		req := httptest.NewRequest("PUT", "/api/workflow/test-wf/description", strings.NewReader(`{"description":"Updated description"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		// Response may be 200 or 500 depending on whether the crossagent binary
+		// is available; either way the description file must have been updated.
+		data, err := os.ReadFile(filepath.Join(wfDir, "description"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "Updated description") {
+			t.Errorf("description file not updated: %q", string(data))
+		}
+		if strings.Contains(string(data), "Old description") {
+			t.Errorf("old description not replaced: %q", string(data))
+		}
+	})
+}
+
 func TestHandleWorkflowRoundArtifact(t *testing.T) {
 	_, cleanup := setupTestWorkflow(t)
 	defer cleanup()

@@ -385,6 +385,72 @@ func handleUpdateDescription(w http.ResponseWriter, r *http.Request) {
 	writeJSONObj(w, map[string]string{"ok": "true"})
 }
 
+// PUT /api/workflow/{name}/description — replaces the description file.
+// Only allowed when the workflow is at phase 1 and has no plan artifact yet
+// (i.e., the workflow has not been run).
+func handleWorkflowSetDescription(w http.ResponseWriter, r *http.Request) {
+	name, ok := requireWorkflowName(w, r)
+	if !ok {
+		return
+	}
+	body := readBody(r)
+	desc := bodyStr(body, "description")
+	if desc == "" {
+		writeError(w, 400, "description is required")
+		return
+	}
+
+	wfDir := state.WorkflowDir(name)
+
+	// Enforce server-side: only allow editing if phase is "1" and plan.md is absent.
+	phaseBytes, err := os.ReadFile(filepath.Join(wfDir, "phase"))
+	if err != nil {
+		writeError(w, 404, "workflow not found")
+		return
+	}
+	if strings.TrimSpace(string(phaseBytes)) != "1" {
+		writeError(w, 409, "description can only be updated before the workflow is run")
+		return
+	}
+	if _, err := os.Stat(filepath.Join(wfDir, "plan.md")); err == nil {
+		writeError(w, 409, "description can only be updated before the workflow is run")
+		return
+	}
+
+	descPath := filepath.Join(wfDir, "description")
+	// Atomic write via temp file + rename.
+	tmp, err := os.CreateTemp(wfDir, ".tmp-desc-*")
+	if err != nil {
+		writeError(w, 500, "failed to create temp file")
+		return
+	}
+	tmpPath := tmp.Name()
+	content := strings.TrimRight(desc, "\n") + "\n"
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		writeError(w, 500, "failed to write description")
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, 500, "failed to write description")
+		return
+	}
+	if err := os.Rename(tmpPath, descPath); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, 500, "failed to update description")
+		return
+	}
+
+	out, err := runCLI("status", "--workflow", name, "--json")
+	if err != nil {
+		writeError(w, 500, "failed to read status after update")
+		return
+	}
+	writeJSON(w, out)
+}
+
 // ── Project API ─────────────────────────────────────────────────────────────
 
 // GET /api/projects

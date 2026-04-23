@@ -124,6 +124,7 @@ func NewMux(sm *SessionManager) *http.ServeMux {
 	mux.HandleFunc("GET /api/workflow/{name}/chat-history/{phase}/stream", handleWorkflowChatHistoryStream)
 	mux.HandleFunc("POST /api/workflow/{name}/repos/add", handleWorkflowReposAdd)
 	mux.HandleFunc("POST /api/workflow/{name}/repos/remove", handleWorkflowReposRemove)
+	mux.HandleFunc("PUT /api/workflow/{name}/description", handleWorkflowSetDescription)
 
 	// Workflow-scoped agent assignments
 	mux.HandleFunc("GET /api/workflow/{name}/agents", handleWorkflowAgentsGet)

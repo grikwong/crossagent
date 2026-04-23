@@ -72,6 +72,12 @@ export function render() {
     `;
   }).join('');
 
+  // Save search focus state before replacing DOM.
+  const prevActive = document.activeElement;
+  const searchHadFocus = prevActive && prevActive.id === 'wfl-search-input';
+  const searchSelStart = searchHadFocus ? prevActive.selectionStart : 0;
+  const searchSelEnd   = searchHadFocus ? prevActive.selectionEnd   : 0;
+
   root.innerHTML = `
     <div class="wfl-search">
       <input type="text" id="wfl-search-input" placeholder="Search workflows…" value="${esc(store.workflowSearch || '')}"/>
@@ -84,6 +90,15 @@ export function render() {
   root.querySelector('#wfl-search-input').addEventListener('input', (e) => {
     setState({ workflowSearch: e.target.value });
   });
+
+  // Restore focus so keystrokes are not interrupted.
+  if (searchHadFocus) {
+    const inp = root.querySelector('#wfl-search-input');
+    if (inp) {
+      inp.focus();
+      inp.setSelectionRange(searchSelStart, searchSelEnd);
+    }
+  }
 
   root.querySelectorAll('.wfl-row').forEach(el => {
     el.addEventListener('click', async () => {
