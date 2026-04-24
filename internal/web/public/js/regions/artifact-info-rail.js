@@ -82,7 +82,6 @@ export function render() {
   `).join('');
 
   root.innerHTML = `
-    ${descHtml}
     ${thisRun}
     <section class="ir-section">
       <div class="ir-label-row">
@@ -91,6 +90,7 @@ export function render() {
       </div>
       ${dirsHtml}
     </section>
+    ${descHtml}
   `;
 
   const saveBtn = root.querySelector('#ir-desc-save');

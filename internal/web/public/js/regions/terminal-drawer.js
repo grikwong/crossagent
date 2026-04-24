@@ -15,6 +15,12 @@ function doFit() {
   }
 }
 
+function doRefresh() {
+  if (typeof window.__crossagentRefreshTerminalView === 'function') {
+    window.__crossagentRefreshTerminalView();
+  }
+}
+
 export function mount(el) {
   root = el;
   if (mounted) return;
@@ -42,10 +48,23 @@ export function render() {
 
 function applyOpen() {
   if (!root) return;
+  const wasOpen = root.dataset.open === 'true';
   root.dataset.open = store.terminalDrawerOpen ? 'true' : 'false';
-  if (store.terminalDrawerOpen) {
-    // After the CSS transition, xterm dimensions become real.
-    setTimeout(doFit, 220);
+  if (store.terminalDrawerOpen && !wasOpen) {
+    // Only schedule a fit on the false→true open transition, not on every render
+    // while already open. This eliminates the race where unrelated store updates
+    // queue repeated delayed fits during an active session.
+    let fired = false;
+    const onEnd = () => {
+      if (fired) return;
+      fired = true;
+      root.removeEventListener('transitionend', onEnd);
+      doFit();
+      doRefresh();
+    };
+    root.addEventListener('transitionend', onEnd);
+    // Fallback: CSS transition is ~180ms; 280ms gives margin for reduced-motion or hidden tabs.
+    setTimeout(onEnd, 280);
   }
 }
 
