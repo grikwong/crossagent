@@ -18,7 +18,9 @@
 └────────┘           └────────┘             └────────┘          └────────┘
 ```
 
-![Crossagent Web UI showing a completed workflow with phase progress, embedded terminal, and rendered artifacts](assets/crossagent-web-ui.png)
+*The pipeline-timeline UI running a live workflow — phase execution in the terminal drawer, real-time status on the board, and rendered artifacts in the reader.*
+
+![Crossagent pipeline-timeline UI: a workflow progressing through Plan → Review → Implement → Verify with live terminal output and rendered artifacts](assets/crossagent.gif)
 
 ## Why Crossagent?
 
@@ -52,6 +54,8 @@ Crossagent runs on top of CLI tools that use **subscription-based plans** (Claud
 - **Multi-Round Iteration**: Finished a feature? Use the **Follow-up** feature to archive all current artifacts into a numbered "round" and reset to Phase 1. Subsequent rounds automatically carry over relevant context from previous iterations.
 - **Searchable Workflow Picker**: Manage hundreds of workflows with ease using the project-grouped, searchable picker. Supports type-to-filter and full keyboard navigation.
 - **Deep Observability**: Every retry attempt is preserved. View archived `plan.md` versions and their corresponding chat logs directly in the Web UI to understand exactly why a phase was retried.
+- **Pipeline-Timeline UI**: The default web layout shows all four phases as a progress board with live status indicators, a collapsible terminal drawer, and an artifact reader with metadata rail — density and drawer state persist across reloads.
+- **Concurrent Session Safety**: The server atomically deduplicates spawn requests; a second browser tab connecting to the same workflow phase reattaches to the running session rather than spawning a duplicate PTY.
 
 ## Installation
 
@@ -117,13 +121,17 @@ On macOS, `make check` will detect missing dependencies and offer to install the
 
 ## Web UI Controls
 
+The default layout is the **pipeline-timeline** view: a top titlebar with workflow selector and search, a phase board showing all four phases in order, a collapsible terminal drawer at the bottom, and an artifact reader with an info rail on the right.
+
 | Control | Action |
 |---------|--------|
-| **Run [Phase]** | Starts the current phase in the embedded terminal |
+| **Run [Phase]** | Starts the current phase in the embedded terminal drawer |
 | **Advance** | Manually advance to the next phase |
 | **Done** | Mark the workflow complete |
-| **Artifact sidebar** | Click any artifact to view rendered markdown |
-| **Workflow selector** | Switch between workflows |
+| **Artifact reader** | Click any phase card or artifact tab to view rendered markdown |
+| **Terminal drawer** | Collapse or expand the terminal (state persists across reloads) |
+| **Workflow selector** | Switch between workflows; supports type-to-filter search |
+| **Description (pencil)** | Edit the feature description — only available before the workflow has started |
 
 **Environment variables:** `CROSSAGENT_PORT` (default `3456`), `CROSSAGENT_HOME` (default `~/.crossagent`).
 
@@ -292,10 +300,15 @@ crossagent/
 │   ├── judge/                   # Verdict parsing for review & verify
 │   └── web/                     # Embedded HTTP/WebSocket server + frontend assets
 │       ├── server.go            # HTTP server setup, routes, static file serving
-│       ├── api.go               # REST API handlers
+│       ├── api.go               # REST API handlers (23 endpoints)
 │       ├── terminal.go          # WebSocket + PTY handler, chat history capture
+│       ├── session.go           # SessionManager — PTY session lifecycle & spawn dedup
 │       ├── embed.go             # go:embed directive for frontend assets
 │       └── public/              # Vanilla JS frontend (HTML, CSS, JS, vendored libs)
+│           ├── js/              # ES modules (state.js, api.js, util.js, derive.js, …)
+│           │   └── regions/     # Per-region components (pipeline-board, terminal-drawer, …)
+│           ├── pipeline.css     # Pipeline-timeline layout styles
+│           └── terminal-drawer.css
 ├── web/                         # Legacy Node.js server (retained for reference)
 ├── test/                        # Integration tests
 ├── docs/                        # Architecture document

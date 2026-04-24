@@ -1,6 +1,6 @@
 # Crossagent — Architecture
 
-> Date: 2026-03-18 | Status: Implemented
+> Date: 2026-04-24 | Status: Implemented
 
 ## System Overview
 
@@ -54,8 +54,36 @@ An embedded Go HTTP/WebSocket server in `internal/web/`:
 - **`server.go`** — HTTP router with API routes and static file serving.
 - **`api.go`** — REST API handlers. These shell out to the `crossagent` binary for operations that produce complex JSON, guaranteeing identical output between CLI and API.
 - **`terminal.go`** — WebSocket + PTY handler using `creack/pty` and `gorilla/websocket`. Manages interactive terminal sessions for each phase agent.
+- **`session.go`** — `SessionManager` struct: tracks active PTY sessions, implements atomic spawn deduplication via `TryClaimSpawn`/`ReleaseSpawnClaim`, and manages scrollback replay on reconnect.
 
-The frontend (`internal/web/public/`) is plain HTML, CSS, and vanilla JS with no build step. Browser dependencies (xterm.js, xterm-addon-fit, marked) are vendored in `public/vendor/`.
+The frontend (`internal/web/public/`) is plain HTML, CSS, and vanilla JS with no build step. Browser dependencies (xterm.js, xterm-addon-fit, marked) are vendored in `public/vendor/`. The default layout is the **pipeline-timeline** (`.app-v2` shell in `index.html`), styled by `pipeline.css` and `terminal-drawer.css`. The legacy stacked-sidebar `.app` shell is kept hidden as a compat layer.
+
+### Frontend Module Architecture
+
+The frontend uses native ES modules (`<script type="module">`). Modules under `public/js/`:
+
+| Module | Role |
+|--------|------|
+| `state.js` | Single store with `setState(patch)` / `subscribe(fn)` — all UI truth lives here |
+| `api.js` | `api(path, opts)` and `wfApi(name, path, opts)` fetch helpers |
+| `util.js` | Shared constants (`PHASE_NAMES`) and pure helpers (`esc`, `capitalize`) |
+| `derive.js` | Computed values derived from the store (selected workflow, phase status, etc.) |
+| `modals.js` | Modal open/close helpers |
+| `v2.js` | Mounts and wires all region components for the pipeline-timeline layout |
+
+Region components live under `public/js/regions/` and each exports `mount(el)` + `render()`:
+
+| Region | Role |
+|--------|------|
+| `titlebar.js` | Top bar — workflow selector, search, session status dot |
+| `workflow-list.js` | Collapsible workflow list with project groups |
+| `pipeline-header.js` | Workflow name, description (editable pre-run), phase progress |
+| `pipeline-board.js` | Four-phase card board with run/advance/done controls |
+| `artifact-reader.js` | Rendered markdown viewer for phase artifacts |
+| `artifact-info-rail.js` | Metadata sidebar for the selected artifact |
+| `terminal-drawer.js` | Collapsible xterm.js terminal drawer |
+
+Vendored classic scripts (`public/vendor/`) load before the module graph so xterm.js globals are available to region modules.
 
 ## Data Architecture
 
@@ -108,6 +136,17 @@ Workflows can be iterated in multiple "rounds." When a workflow is completed (Ph
 - **Context Preservation**: The reset to Phase 1 for the new round automatically generates a `followup-context.md` that summarizes previous findings to guide the next iteration.
 - **Deep History**: The Web UI allows browsing all previous rounds, including their specific terminal session logs and interim retry attempts.
 
+### Hardened Revert Operation
+
+`crossagent revert` follows a strict ordering to avoid collisions on concurrent retries:
+
+1. Archive the current phase artifact (e.g. `review.md → review.attempt-N.md`) with explicit rename error surfacing.
+2. Check `state.LooksSubstantive(sourceArtifact)` before reading the source for revert context — if the artifact is not substantive a warning is emitted and the revert context is generated without issue details.
+3. Write `revert-context.md` atomically; abort the whole operation if the write fails (avoids leaving the workflow in a partially-reverted state).
+4. Write `retry_count` **before** `SetPhase` so that if `SetPhase` fails the next revert attempt uses the new attempt number (no collision on the archive file name).
+
+`state.LooksSubstantive` is exported (`LooksSubstantive`) so `cmdRevert` can call it without duplicating the threshold logic.
+
 ### Robust Artifact Recovery
 Sandboxed agents (especially Gemini on macOS) may be forced to write artifacts into the repo root (their CWD) rather than the workflow directory. Crossagent's recovery system:
 - **Canonical Path Resolution**: Automatically evaluates symlinks (e.g., `/Users` vs `/private/var/users`) to ensure sandbox profiles correctly authorize the workflow directory.
@@ -119,7 +158,10 @@ Sandboxed agents (especially Gemini on macOS) may be forced to write artifacts i
 The Web UI spawns interactive agent sessions via WebSocket:
 
 1. Client fetches launch params: `GET /api/phase-cmd/{phase}` → returns command, args, cwd, prompt.
-2. Client sends `spawn` message → server creates a PTY via `creack/pty` and starts the agent process.
+2. Client sends `spawn` message → server calls `SessionManager.TryClaimSpawn(workflow, phase)` under a lock:
+   - If a running session already exists, the server reattaches the connection via `sm.Attach` and replays the scrollback buffer (no second PTY is created).
+   - If the slot is unclaimed, the claim is reserved and a PTY is created via `creack/pty`; `ReleaseSpawnClaim` is deferred to release the reservation on exit or error.
+   - If another goroutine holds the claim (concurrent spawn race), the server returns an `error` message and the client retries.
 3. Bidirectional streaming: `input` (client → server), `output` (server → client).
 4. Client can send `resize` (terminal dimensions) and `kill` (terminate session).
 5. Server sends `spawned`, `exit`, and `error` messages for lifecycle events.
@@ -186,6 +228,16 @@ A path-scope guard ensures recovery only ever moves files into the workflow dire
 
 `crossagent advance` (phase 2→3 and phase 4→done) inspects the corresponding `review.md` / `verify.md` verdict via `internal/judge` and refuses to bump the phase when the parsed verdict is `Rework` (or `Fix` for verify). This closes a half-state window where the Web UI had bumped the phase but the follow-up `/supervise` call had not yet run the revert — which is how workflows could end up at phase=3 with no approval on record. A missing artifact preserves the legacy dry-advance behavior so integration tests and CLI-only flows that advance phases without producing artifacts still work.
 
+### Phase-consistency guard
+
+`crossagent advance` accepts an optional `--expected-phase <1-4>` flag. When provided, the command no-ops if the current phase does not match — preventing TOCTOU races where a concurrent revert or supervise changed the phase between the caller's artifact-existence check and the advance call. The Web UI's `check-advance` and `check-file` handlers always pass this flag, derived from a filename→phase map (`plan.md→1`, `review.md→2`, `implement.md→3`, `verify.md→4`).
+
+The `advanced` field in `check-advance` responses reflects an **actual state change** (pre/post phase comparison) rather than unconditionally returning `true`. This allows the frontend to distinguish a real phase transition from a legitimate no-op (verdict gate or phase mismatch guard).
+
+### Description edit guard
+
+`PUT /api/workflow/{name}/description` atomically replaces a workflow's description file. The handler enforces server-side that editing is only allowed when phase is `"1"`, `plan.md` does not yet exist, and no plan PTY session is running. This prevents the description from drifting out of sync with in-progress work.
+
 Each adapter constructs launch arguments including:
 - Workspace directory flags (`--add-dir` for claude/codex, `--include-directories` for gemini) covering the workflow directory, global/project memory, and any extra `add_dirs`
 - Auto-approval / sandbox settings appropriate for the adapter
@@ -195,7 +247,7 @@ Custom agents can be registered via `crossagent agents add` with an adapter type
 
 ## CI/CD Pipeline
 
-- **CI** (`.github/workflows/ci.yml`) — `go vet`, build, unit tests, integration tests, GoReleaser config validation.
+- **CI** (`.github/workflows/ci.yml`) — `go vet`, build, unit tests (`internal/web/session_test.go`, `api_test.go`, `ui_regression_test.go`, …), integration tests, GoReleaser config validation.
 - **Security** (`.github/workflows/security.yml`) — `govulncheck`, `go vet`, `staticcheck` with pinned versions.
 - **Release** (`.github/workflows/release.yml`) — `release-please` for automated semantic versioning + GoReleaser for cross-platform binary builds and Homebrew formula updates.
 
