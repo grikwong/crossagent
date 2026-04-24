@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.8.0](https://github.com/grikwong/crossagent/compare/v1.7.1...v1.8.0) (2026-04-24)
+
+
+### Features
+
+* **state:** harden revert operation atomicity ([bdf130c](https://github.com/grikwong/crossagent/commit/bdf130c6bae3d452e3e1f46d70753f0dac772b04))
+* **web:** add collapsible terminal drawer to v2 layout ([b4412f1](https://github.com/grikwong/crossagent/commit/b4412f197b9fb5a10707508f5c39664ca253ed02))
+* **web:** make pipeline-timeline the default layout ([94aa516](https://github.com/grikwong/crossagent/commit/94aa516ed969a3a8f13e63351508af632a1962cd))
+* **web:** polish v2 — density, breakpoints, Raw, retries ([c8232a1](https://github.com/grikwong/crossagent/commit/c8232a1ee92cd0765e0bdd75fd866d9cd71e1610))
+* **web:** render pipeline-timeline layout behind ?v2=1 flag ([2bafa5b](https://github.com/grikwong/crossagent/commit/2bafa5bf66adad69b24bfd90684916b55bfd183c))
+* **web:** scaffold pipeline-timeline UI redesign ([1dd934b](https://github.com/grikwong/crossagent/commit/1dd934bd96ff5850cc54c21d013914210f8fbdfc))
+* **web:** smaller font and repaint after fit ([1e719f4](https://github.com/grikwong/crossagent/commit/1e719f4ea3ca3bd640e91223a4092e521e4b73a3))
+
+
+### Bug Fixes
+
+* **web:** address pipeline-timeline review findings ([96136e7](https://github.com/grikwong/crossagent/commit/96136e76c4668f75182de5dc1be013a8fdd52b11))
+* **web:** atomic spawn dedup and phase-aware advance guard ([db06ce7](https://github.com/grikwong/crossagent/commit/db06ce74746a22c99d40305df5c6a5bd7cbff25e))
+* **web:** block desc edits during active session ([7120beb](https://github.com/grikwong/crossagent/commit/7120beb2ea716e7001ac66706d0a2d2955b4acb5))
+* **web:** edge-trigger drawer fit and reorder rail ([61bb825](https://github.com/grikwong/crossagent/commit/61bb8252ee54ce41627425147a6d90d76561eb85))
+* **web:** fix workflow selection revert bug ([94d966a](https://github.com/grikwong/crossagent/commit/94d966ae01c60085d43aa3f8764b48e8c92914da))
+* **web:** search focus, alignment, description rail ([26359fa](https://github.com/grikwong/crossagent/commit/26359fa4ebb3b0d9891eefb29fa46e59902a7afc))
+
 ## [1.7.1](https://github.com/grikwong/crossagent/compare/v1.7.0...v1.7.1) (2026-04-16)
 
 
