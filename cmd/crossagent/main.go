@@ -2360,11 +2360,17 @@ func cmdRevert(args []string) {
 		key := phaseKeys[pi]
 		artifact := filepath.Join(d, key+".md")
 		if fileExists(artifact) {
-			os.Rename(artifact, filepath.Join(d, fmt.Sprintf("%s.attempt-%d.md", key, attempt)))
+			dest := filepath.Join(d, fmt.Sprintf("%s.attempt-%d.md", key, attempt))
+			if err := os.Rename(artifact, dest); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not archive %s: %v\n", artifact, err)
+			}
 		}
 		chatLog := filepath.Join(d, "chat-history", key+".log")
 		if fileExists(chatLog) {
-			os.Rename(chatLog, filepath.Join(d, "chat-history", fmt.Sprintf("%s.attempt-%d.log", key, attempt)))
+			dest := filepath.Join(d, "chat-history", fmt.Sprintf("%s.attempt-%d.log", key, attempt))
+			if err := os.Rename(chatLog, dest); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not archive %s: %v\n", chatLog, err)
+			}
 		}
 	}
 
@@ -2389,14 +2395,23 @@ func cmdRevert(args []string) {
 
 	extractedIssues := ""
 	if sourceArtifact != "" {
-		data, err := os.ReadFile(sourceArtifact)
-		if err == nil {
-			extractedIssues = string(data)
+		if !state.LooksSubstantive(sourceArtifact, filepath.Base(sourceArtifact)) {
+			fmt.Fprintf(os.Stderr, "warning: source artifact %s is not substantive; revert context will lack issue details\n", sourceArtifact)
+		} else {
+			data, err := os.ReadFile(sourceArtifact)
+			if err == nil {
+				extractedIssues = string(data)
+			}
 		}
 	}
 
-	// Write revert context
-	os.MkdirAll(filepath.Join(d, "prompts"), 0755)
+	// Write revert context — this is the cross-model handoff artifact.
+	// Abort the revert if it cannot be written; leave the workflow in the
+	// current phase so the operator can retry.
+	promptsDir := filepath.Join(d, "prompts")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		die(fmt.Sprintf("revert: could not create prompts dir: %v", err))
+	}
 	ctx := filepath.Join(d, "prompts", "revert-context.md")
 
 	reasonText := reason
@@ -2445,11 +2460,14 @@ func cmdRevert(args []string) {
 	ctxContent.WriteString("- After fixing, verify your changes resolve each listed issue\n")
 	ctxContent.WriteString("- Document what you fixed and how in your output file\n")
 
-	os.WriteFile(ctx, []byte(ctxContent.String()), 0644)
+	if err := os.WriteFile(ctx, []byte(ctxContent.String()), 0644); err != nil {
+		die(fmt.Sprintf("revert: could not write revert context: %v", err))
+	}
 
-	// Update state
-	state.SetPhase(d, target)
+	// Update state — write retry_count before phase so a SetPhase failure
+	// uses the new attempt number on the next revert (no collision).
 	state.SetConf(d, "retry_count", strconv.Itoa(retryCount))
+	state.SetPhase(d, target)
 
 	if jsonMode {
 		out := cli.RevertJSON{

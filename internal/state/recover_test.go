@@ -265,7 +265,7 @@ func TestLooksSubstantive_MemoryUpdatesExemptFromHeader(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "memory_updates.md")
 	os.WriteFile(path, []byte(strings.Repeat("- entry\n", 40)), 0644)
-	if !looksSubstantive(path, "memory_updates.md") {
+	if !LooksSubstantive(path, "memory_updates.md") {
 		t.Error("memory_updates.md with no header should still be substantive when large enough")
 	}
 }

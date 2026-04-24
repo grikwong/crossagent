@@ -103,7 +103,7 @@ func RecoverMisplacedOutput(wfDir, repo, basename string) (recovered bool, srcPa
 	// (b) the operator can still inspect what the agent actually
 	// wrote. Errors from the rename are surfaced so callers can log
 	// them, but the recovery itself is still a no-op either way.
-	if !looksSubstantive(candidate, basename) {
+	if !LooksSubstantive(candidate, basename) {
 		quarantine := candidate + probeQuarantineSuffix
 		// Use a timestamp-free suffix so repeated probes collapse
 		// onto the same file instead of cluttering the repo root.
@@ -152,7 +152,7 @@ func RecoverWorkflowOutputs(wfDir, repo string) (recoveredFrom []string, err err
 	return recoveredFrom, err
 }
 
-// looksSubstantive reports whether path points to a file large and
+// LooksSubstantive reports whether path points to a file large and
 // structured enough to plausibly be a real phase artifact rather than
 // a sandbox probe. Checks (in order, any failure disqualifies):
 //
@@ -165,7 +165,7 @@ func RecoverWorkflowOutputs(wfDir, repo string) (recoveredFrom []string, err err
 //
 // Unreadable files are treated as non-substantive — if we cannot
 // inspect the content, we must not promote it.
-func looksSubstantive(path, basename string) bool {
+func LooksSubstantive(path, basename string) bool {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return false
