@@ -342,6 +342,94 @@ func TestShutdownAll(t *testing.T) {
 	}
 }
 
+// TestTryClaimSpawn verifies that concurrent TryClaimSpawn calls for the same
+// workflow+phase allow only one caller to proceed with spawning.
+func TestTryClaimSpawn(t *testing.T) {
+	sm := NewSessionManager()
+
+	const workflow = "test-wf"
+	const phase = "implement"
+
+	// First caller should receive claimed=true with no existing session.
+	existing, claimed := sm.TryClaimSpawn(workflow, phase)
+	if existing != nil {
+		t.Fatal("expected nil existing session on first claim")
+	}
+	if !claimed {
+		t.Fatal("expected first TryClaimSpawn to return claimed=true")
+	}
+
+	// Second concurrent caller for the same slot should be rejected.
+	existing2, claimed2 := sm.TryClaimSpawn(workflow, phase)
+	if existing2 != nil {
+		t.Fatal("expected nil existing session on second claim")
+	}
+	if claimed2 {
+		t.Fatal("expected second TryClaimSpawn to return claimed=false while first is in-flight")
+	}
+
+	// Releasing the claim opens the slot again.
+	sm.ReleaseSpawnClaim(workflow, phase)
+	_, claimed3 := sm.TryClaimSpawn(workflow, phase)
+	if !claimed3 {
+		t.Fatal("expected TryClaimSpawn to succeed after ReleaseSpawnClaim")
+	}
+	sm.ReleaseSpawnClaim(workflow, phase)
+
+	// When a running session already exists for the slot, TryClaimSpawn
+	// returns it instead of claiming.
+	cmd := exec.Command("echo")
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty.Start: %v", err)
+	}
+	defer ptmx.Close()
+	cmd.Wait()
+
+	s := sm.Create(workflow, phase, cmd, ptmx, "/tmp/test")
+	s.Done = make(chan struct{})
+	close(s.Done)
+
+	existingSession, claimedAfterCreate := sm.TryClaimSpawn(workflow, phase)
+	if existingSession == nil {
+		t.Fatal("expected existing session to be returned when running session exists")
+	}
+	if claimedAfterCreate {
+		t.Fatal("expected claimed=false when a running session exists")
+	}
+}
+
+// TestTryClaimSpawnConcurrent verifies under race detector that only one
+// goroutine receives claimed=true when many call TryClaimSpawn concurrently.
+func TestTryClaimSpawnConcurrent(t *testing.T) {
+	sm := NewSessionManager()
+
+	const goroutines = 50
+	results := make([]bool, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, claimed := sm.TryClaimSpawn("wf-conc", "implement")
+			results[i] = claimed
+		}()
+	}
+	wg.Wait()
+
+	claimCount := 0
+	for _, c := range results {
+		if c {
+			claimCount++
+		}
+	}
+	if claimCount != 1 {
+		t.Fatalf("expected exactly 1 goroutine to claim the spawn slot, got %d", claimCount)
+	}
+}
+
 // TestRingBufferConcurrent verifies that concurrent reads and writes on a
 // ringBuffer protected by its internal mutex do not race.
 // Run with: go test -race ./internal/web/...

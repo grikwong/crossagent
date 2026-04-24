@@ -819,6 +819,21 @@ func cmdAdvance(args []string) {
 		return
 	}
 
+	// Phase-consistency guard: if the caller passes --expected-phase, refuse
+	// to advance when the current phase doesn't match. This prevents TOCTOU
+	// races where a concurrent supervise/revert changed the phase between the
+	// caller's file-existence check and this advance call.
+	if expectedPhaseStr := flagStr(args, "--expected-phase"); expectedPhaseStr != "" {
+		expectedPhase, err := strconv.Atoi(expectedPhaseStr)
+		if err != nil || expectedPhase < 1 || expectedPhase > 4 {
+			die("--expected-phase must be an integer 1–4")
+		}
+		if state.PhaseNum(phase) != expectedPhase {
+			warn(fmt.Sprintf("Phase mismatch: expected %d, current %s — skipping advance", expectedPhase, phase))
+			return
+		}
+	}
+
 	// Sandbox-fallback recovery: OS-level sandboxes (e.g. gemini's
 	// --sandbox / seatbelt profile) can deny writes to the workflow dir
 	// and force the agent to emit its artifact into the repo root

@@ -328,6 +328,32 @@ func handleSpawn(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsM
 	cmd.Dir = cwd
 	cmd.Env = cleanEnv()
 
+	// Derive workflow name early so we can perform atomic dedup before PTY launch.
+	workflow := filepath.Base(phaseCmd.WorkflowDir)
+
+	// Atomic dedup: find-or-claim under the session-manager lock so two
+	// concurrent handleSpawn calls for the same workflow+phase cannot both
+	// proceed to create a PTY.
+	existing, claimed := sm.TryClaimSpawn(workflow, msg.PhaseName)
+	if existing != nil {
+		// A running session exists — reattach using the established Attach
+		// contract (replay-before-broadcast, input-owner semantics).
+		s := sm.Attach(existing.ID, ws)
+		if s != nil {
+			cs.mu.Lock()
+			cs.sessionID = existing.ID
+			cs.mu.Unlock()
+		} else {
+			wsSend(ws, "error", map[string]any{"message": "session exited during reattach; retry"})
+		}
+		return
+	}
+	if !claimed {
+		wsSend(ws, "error", map[string]any{"message": "concurrent spawn already in progress for this workflow+phase"})
+		return
+	}
+	defer sm.ReleaseSpawnClaim(workflow, msg.PhaseName)
+
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Rows: rows,
 		Cols: cols,
@@ -336,9 +362,6 @@ func handleSpawn(sm *SessionManager, ws *websocket.Conn, cs *connState, msg *wsM
 		wsSend(ws, "error", map[string]any{"message": err.Error()})
 		return
 	}
-
-	// Determine workflow name from workflow dir
-	workflow := filepath.Base(phaseCmd.WorkflowDir)
 
 	// Create session in the manager
 	session := sm.Create(workflow, msg.PhaseName, cmd, ptmx, phaseCmd.WorkflowDir)

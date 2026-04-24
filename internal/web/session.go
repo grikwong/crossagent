@@ -185,6 +185,7 @@ type SessionInfo struct {
 // SessionManager tracks all active PTY sessions.
 type SessionManager struct {
 	sessions map[string]*Session
+	spawning map[string]bool // workflow+"\x00"+phase → true while spawn is in-flight
 	mu       sync.RWMutex
 	counter  int // simple incrementing ID
 }
@@ -193,6 +194,7 @@ type SessionManager struct {
 func NewSessionManager() *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*Session),
+		spawning: make(map[string]bool),
 	}
 }
 
@@ -239,6 +241,42 @@ func (sm *SessionManager) GetByWorkflowPhase(workflow, phase string) *Session {
 		}
 	}
 	return nil
+}
+
+// TryClaimSpawn atomically checks for an existing running session and,
+// if none exists, reserves the workflow+phase slot for a new spawn.
+//
+// Returns:
+//   - (existing, false) if a running session already exists — caller should
+//     reattach via sm.Attach(existing.ID, ...) and skip the PTY launch.
+//   - (nil, true) if the slot was claimed — caller must launch the PTY and
+//     call sm.ReleaseSpawnClaim when done (deferred).
+//   - (nil, false) if another goroutine already holds the spawn claim —
+//     caller should return an error.
+func (sm *SessionManager) TryClaimSpawn(workflow, phase string) (*Session, bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for _, s := range sm.sessions {
+		if s.Workflow == workflow && s.Phase == phase && s.Status == "running" {
+			return s, false
+		}
+	}
+	key := workflow + "\x00" + phase
+	if sm.spawning[key] {
+		return nil, false
+	}
+	sm.spawning[key] = true
+	return nil, true
+}
+
+// ReleaseSpawnClaim removes the in-flight spawn reservation for workflow+phase.
+// Must be called (deferred) by the goroutine that received claimed=true from
+// TryClaimSpawn, whether the spawn succeeded or failed.
+func (sm *SessionManager) ReleaseSpawnClaim(workflow, phase string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	delete(sm.spawning, workflow+"\x00"+phase)
 }
 
 // Attach adds a WebSocket viewer to a session and replays the scrollback buffer.

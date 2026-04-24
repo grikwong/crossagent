@@ -50,6 +50,9 @@
 .app-v2 .tb-filter {
   display: flex;
   align-items: center;
+  margin-bottom: 0;
+  border: none;
+  padding: 0;
 }
 
 .app-v2 .tb-filter select {

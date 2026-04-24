@@ -754,8 +754,23 @@ func handleCheckAdvance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// File exists — advance
-	if _, err := runCLI("advance"); err != nil {
+	// Read phase before advance to detect actual state changes vs. guarded no-ops.
+	var phaseBefore string
+	if currentName, err := state.GetCurrent(); err == nil {
+		phaseBefore, _ = state.GetPhase(state.WorkflowDir(currentName))
+	}
+
+	// Map the output file to the phase that produces it so cmdAdvance can
+	// enforce the phase-consistency guard against TOCTOU races.
+	outputBasename := filepath.Base(outputFile)
+	expectedPhaseByFile := map[string]string{
+		"plan.md": "1", "review.md": "2", "implement.md": "3", "verify.md": "4",
+	}
+	advArgs := []string{"advance"}
+	if ep, known := expectedPhaseByFile[outputBasename]; known {
+		advArgs = append(advArgs, "--expected-phase", ep)
+	}
+	if _, err := runCLI(advArgs...); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -766,10 +781,17 @@ func handleCheckAdvance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine advancement from actual state change, not subprocess exit code.
+	var phaseAfter string
+	if currentName, err := state.GetCurrent(); err == nil {
+		phaseAfter, _ = state.GetPhase(state.WorkflowDir(currentName))
+	}
+	advanced := phaseBefore != "" && phaseAfter != phaseBefore
+
 	var statusData any
 	json.Unmarshal(statusOut, &statusData)
 	writeJSONObj(w, map[string]any{
-		"advanced": true,
+		"advanced": advanced,
 		"status":   statusData,
 	})
 }
@@ -1223,11 +1245,31 @@ func handleWorkflowCheckAdvance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// File exists — advance the specific workflow
-	if _, err := runCLI("advance", "--workflow", name); err != nil {
+	// Read phase before advance to detect actual state changes vs. guarded no-ops.
+	wfDir := state.WorkflowDir(name)
+	phaseBefore, _ := state.GetPhase(wfDir)
+
+	// Map the output file to the phase that produces it so cmdAdvance can
+	// enforce the phase-consistency guard against TOCTOU races.
+	outputBasename := filepath.Base(outputFile)
+	expectedPhaseByFile := map[string]string{
+		"plan.md": "1", "review.md": "2", "implement.md": "3", "verify.md": "4",
+	}
+	advArgs := []string{"advance", "--workflow", name}
+	if ep, known := expectedPhaseByFile[outputBasename]; known {
+		advArgs = append(advArgs, "--expected-phase", ep)
+	}
+	if _, err := runCLI(advArgs...); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
+
+	// Determine advancement from actual state change, not subprocess exit code.
+	// cmdAdvance can legitimately no-op (verdict gate, phase mismatch) without
+	// returning an error, so we must compare pre/post state to tell the browser
+	// whether a real phase transition occurred.
+	phaseAfter, _ := state.GetPhase(wfDir)
+	advanced := phaseAfter != phaseBefore
 
 	statusOut, err := runCLI("status", "--workflow", name, "--json")
 	if err != nil {
@@ -1238,7 +1280,7 @@ func handleWorkflowCheckAdvance(w http.ResponseWriter, r *http.Request) {
 	var statusData any
 	json.Unmarshal(statusOut, &statusData)
 	writeJSONObj(w, map[string]any{
-		"advanced":       true,
+		"advanced":       advanced,
 		"status":         statusData,
 		"recovered":      recovered,
 		"recovered_from": recoveredFrom,
